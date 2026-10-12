@@ -10,7 +10,7 @@ public sealed record SpoolEntry(string Path, long Size, DateTime LastWriteUtc, s
 
 /// <summary>
 /// Lokaler Zwischenspeicher (%LOCALAPPDATA%\Fileman\spool). Hält Zwischenstände fest, solange die Platte fehlt,
-/// und überträgt sie beim nächsten Einstecken ins Archiv. Gleiches Blob-Format wie das Archiv.
+/// und überträgt sie beim nächsten Einstecken ins Archiv. Intern komprimiert (gzip); im Archiv landen sie lesbar.
 /// </summary>
 public sealed class Spool
 {
@@ -105,16 +105,15 @@ public sealed class Spool
             return 0;
         }
         var catalog = archive.Catalog;
+        var layout = new ArchiveLayout(archive.Store, catalog, nowUtc);
         var imported = 0;
         catalog.BeginTransaction();
         try
         {
             foreach (var entry in entries.OrderBy(e => e.CapturedUtc))
             {
-                archive.Blobs.ImportFrom(Blobs, entry.Hash);
-                catalog.EnsureBlob(entry.Hash, entry.Size, entry.StoredSize, nowUtc);
-
                 var doc = catalog.FindDocumentByAnyPath(entry.Path);
+                var isNew = doc is null;
                 if (doc is null)
                 {
                     // Entstanden und wieder verschwunden, während die Platte fehlte.
@@ -131,18 +130,39 @@ public sealed class Spool
                     };
                     catalog.InsertDocument(doc);
                 }
-                if (catalog.HasVersionWithHash(doc.Id, entry.Hash))
-                    continue;
-                catalog.InsertVersion(new VersionRecord
+                else if (catalog.HasVersionWithHash(doc.Id, entry.Hash))
                 {
-                    DocumentId = doc.Id,
-                    Hash = entry.Hash,
-                    Size = entry.Size,
-                    LastWriteUtc = entry.LastWriteUtc,
-                    Path = entry.Path,
-                    CapturedUtc = entry.CapturedUtc,
-                    Trigger = BackupTrigger.Watcher,
-                }, runId: null);
+                    continue;
+                }
+
+                StagedContent? staged = null;
+                if (catalog.GetBlobPath(entry.Hash) is null)
+                {
+                    using var content = Blobs.OpenRead(entry.Hash);
+                    staged = archive.Store.Stage(content);
+                }
+                try
+                {
+                    var archivePath = layout.PlaceVersion(doc.Id, entry.Path, entry.Hash, entry.Size, entry.LastWriteUtc, staged);
+                    catalog.InsertVersion(new VersionRecord
+                    {
+                        DocumentId = doc.Id,
+                        Hash = entry.Hash,
+                        Size = entry.Size,
+                        LastWriteUtc = entry.LastWriteUtc,
+                        Path = entry.Path,
+                        CapturedUtc = entry.CapturedUtc,
+                        Trigger = BackupTrigger.Watcher,
+                        ArchivePath = archivePath,
+                    }, runId: null);
+                }
+                finally
+                {
+                    if (staged is not null)
+                        ArchiveStore.Discard(staged.TempPath);
+                }
+                if (isNew)
+                    layout.SetCurrent(doc);
                 catalog.InsertEvent(new ChangeEvent { Utc = entry.CapturedUtc, DocumentId = doc.Id, Kind = ChangeKind.Modified, Path = entry.Path });
                 imported++;
             }

@@ -21,7 +21,7 @@ public sealed class FindQuery
 /// </summary>
 public sealed class CatalogDatabase : IDisposable
 {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
 
     private readonly SqliteConnection _connection;
     private SqliteTransaction? _transaction;
@@ -62,6 +62,8 @@ public sealed class CatalogDatabase : IDisposable
             throw new FilemanException("Das Archiv wurde mit einer neueren Fileman-Version erstellt. Bitte Fileman aktualisieren.");
         if (version == SchemaVersion)
             return;
+        if (version != 0)
+            throw new FilemanException("Dieses Archiv hat ein veraltetes Format aus einer Vorabversion. Bitte ein neues Archiv anlegen.");
 
         Execute("""
             CREATE TABLE IF NOT EXISTS Documents (
@@ -81,11 +83,21 @@ public sealed class CatalogDatabase : IDisposable
             CREATE INDEX IF NOT EXISTS IX_Documents_FileId ON Documents(FileId);
             CREATE INDEX IF NOT EXISTS IX_Documents_Hash ON Documents(Hash);
 
+            -- Jeder Inhalt einmal; StoredPath = Datei unter "Dateien", die ihn tatsächlich enthält (weitere Namen sind Hardlinks).
             CREATE TABLE IF NOT EXISTS Blobs (
                 Hash TEXT PRIMARY KEY,
                 Size INTEGER NOT NULL,
-                StoredSize INTEGER NOT NULL,
+                StoredPath TEXT NOT NULL,
                 StoredUtc TEXT NOT NULL
+            );
+
+            -- Alle von Fileman unter "Dateien" angelegten Namen (Versionen und aktueller Stand).
+            CREATE TABLE IF NOT EXISTS ArchiveFiles (
+                PathKey TEXT PRIMARY KEY,
+                RelativePath TEXT NOT NULL,
+                Hash TEXT NOT NULL REFERENCES Blobs(Hash),
+                DocumentId INTEGER NOT NULL REFERENCES Documents(Id),
+                IsCurrent INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS Runs (
@@ -107,7 +119,8 @@ public sealed class CatalogDatabase : IDisposable
                 Path TEXT NOT NULL,
                 CapturedUtc TEXT NOT NULL,
                 Trigger TEXT NOT NULL,
-                RunId INTEGER NULL REFERENCES Runs(Id)
+                RunId INTEGER NULL REFERENCES Runs(Id),
+                ArchivePath TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS IX_Versions_DocumentId ON Versions(DocumentId);
 
@@ -187,18 +200,36 @@ public sealed class CatalogDatabase : IDisposable
         ("$deletedUtc", doc.DeletedUtc is { } d ? ToDb(d) : null),
     ];
 
-    public void EnsureBlob(string hash, long size, long storedSize, DateTime utc) =>
-        Execute("INSERT OR IGNORE INTO Blobs (Hash, Size, StoredSize, StoredUtc) VALUES ($h, $s, $ss, $u)",
-            [("$h", hash), ("$s", size), ("$ss", storedSize), ("$u", ToDb(utc))]);
+    public void InsertBlob(string hash, long size, string storedPath, DateTime utc) =>
+        Execute("INSERT INTO Blobs (Hash, Size, StoredPath, StoredUtc) VALUES ($h, $s, $p, $u)",
+            [("$h", hash), ("$s", size), ("$p", storedPath), ("$u", ToDb(utc))]);
+
+    public void UpdateBlobPath(string hash, string storedPath) =>
+        Execute("UPDATE Blobs SET StoredPath = $p WHERE Hash = $h", [("$h", hash), ("$p", storedPath)]);
+
+    public string? GetBlobPath(string hash) =>
+        ScalarWith("SELECT StoredPath FROM Blobs WHERE Hash = $h", [("$h", hash)]) as string;
+
+    public ArchiveFileRecord? GetArchiveFile(string relativePath) =>
+        Query("SELECT RelativePath, Hash, DocumentId, IsCurrent FROM ArchiveFiles WHERE PathKey = $k",
+            [("$k", PathUtil.Key(relativePath))], r => new ArchiveFileRecord(r.GetString(0), r.GetString(1), r.GetInt64(2), r.GetInt64(3) != 0)).FirstOrDefault();
+
+    public void InsertArchiveFile(ArchiveFileRecord file) =>
+        Execute("INSERT INTO ArchiveFiles (PathKey, RelativePath, Hash, DocumentId, IsCurrent) VALUES ($k, $p, $h, $d, $c)",
+            [("$k", PathUtil.Key(file.RelativePath)), ("$p", file.RelativePath), ("$h", file.Hash), ("$d", file.DocumentId), ("$c", file.IsCurrent ? 1 : 0)]);
+
+    public void DeleteArchiveFile(string relativePath) =>
+        Execute("DELETE FROM ArchiveFiles WHERE PathKey = $k", [("$k", PathUtil.Key(relativePath))]);
 
     public long InsertVersion(VersionRecord version, long? runId)
     {
         version.Id = InsertAndGetId("""
-            INSERT INTO Versions (DocumentId, Hash, Size, LastWriteUtc, Path, CapturedUtc, Trigger, RunId)
-            VALUES ($doc, $hash, $size, $mtime, $path, $captured, $trigger, $run)
+            INSERT INTO Versions (DocumentId, Hash, Size, LastWriteUtc, Path, CapturedUtc, Trigger, RunId, ArchivePath)
+            VALUES ($doc, $hash, $size, $mtime, $path, $captured, $trigger, $run, $archive)
             """,
             [("$doc", version.DocumentId), ("$hash", version.Hash), ("$size", version.Size), ("$mtime", ToDb(version.LastWriteUtc)),
-             ("$path", version.Path), ("$captured", ToDb(version.CapturedUtc)), ("$trigger", version.Trigger.ToString()), ("$run", runId)]);
+             ("$path", version.Path), ("$captured", ToDb(version.CapturedUtc)), ("$trigger", version.Trigger.ToString()), ("$run", runId),
+             ("$archive", version.ArchivePath)]);
         return version.Id;
     }
 
@@ -269,11 +300,11 @@ public sealed class CatalogDatabase : IDisposable
     }
 
     public List<VersionRecord> GetVersions(long documentId) =>
-        Query("SELECT Id, DocumentId, Hash, Size, LastWriteUtc, Path, CapturedUtc, Trigger FROM Versions WHERE DocumentId = $d ORDER BY CapturedUtc DESC, Id DESC",
+        Query("SELECT Id, DocumentId, Hash, Size, LastWriteUtc, Path, CapturedUtc, Trigger, ArchivePath FROM Versions WHERE DocumentId = $d ORDER BY CapturedUtc DESC, Id DESC",
             [("$d", documentId)], ReadVersion);
 
     public VersionRecord? GetVersion(long versionId) =>
-        Query("SELECT Id, DocumentId, Hash, Size, LastWriteUtc, Path, CapturedUtc, Trigger FROM Versions WHERE Id = $id",
+        Query("SELECT Id, DocumentId, Hash, Size, LastWriteUtc, Path, CapturedUtc, Trigger, ArchivePath FROM Versions WHERE Id = $id",
             [("$id", versionId)], ReadVersion).FirstOrDefault();
 
     public List<PathChangeRecord> GetPathHistory(long documentId) =>
@@ -307,8 +338,8 @@ public sealed class CatalogDatabase : IDisposable
     public List<ChangeEvent> GetEventsForDocument(long documentId) =>
         Query("SELECT Id, Utc, DocumentId, Kind, Path, OldPath FROM Events WHERE DocumentId = $d ORDER BY Id DESC", [("$d", documentId)], ReadEvent);
 
-    public List<string> GetAllBlobHashes() =>
-        Query("SELECT Hash FROM Blobs ORDER BY Hash", [], r => r.GetString(0));
+    public List<(string Hash, string StoredPath)> GetAllBlobs() =>
+        Query("SELECT Hash, StoredPath FROM Blobs ORDER BY Hash", [], r => (r.GetString(0), r.GetString(1)));
 
     public RunRecord? GetLastRun() =>
         Query("SELECT Id, StartedUtc, FinishedUtc, Trigger, FilesScanned, Changes, Errors FROM Runs WHERE FinishedUtc IS NOT NULL ORDER BY Id DESC LIMIT 1",
@@ -329,8 +360,8 @@ public sealed class CatalogDatabase : IDisposable
                    (SELECT COUNT(*) FROM Documents WHERE IsDeleted = 1),
                    (SELECT COUNT(*) FROM Versions),
                    (SELECT COUNT(*) FROM Blobs),
-                   (SELECT IFNULL(SUM(Size), 0) FROM Blobs),
-                   (SELECT IFNULL(SUM(StoredSize), 0) FROM Blobs)
+                   (SELECT IFNULL(SUM(Size), 0) FROM Versions),
+                   (SELECT IFNULL(SUM(Size), 0) FROM Blobs)
             """, [], r => new CatalogStatistics
         {
             LiveDocuments = r.GetInt32(0),
@@ -389,6 +420,7 @@ public sealed class CatalogDatabase : IDisposable
         Path = r.GetString(5),
         CapturedUtc = FromDb(r.GetString(6)),
         Trigger = Enum.Parse<BackupTrigger>(r.GetString(7)),
+        ArchivePath = r.GetString(8),
     };
 
     private static ChangeEvent ReadEvent(SqliteDataReader r) => new()

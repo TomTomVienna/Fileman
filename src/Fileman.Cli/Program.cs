@@ -186,7 +186,7 @@ int Status()
         Console.WriteLine($"Letzte Sicherung: {(last is null ? "noch keine" : $"{DisplayText.Time(last.FinishedUtc!.Value)} ({DisplayText.Trigger(last.Trigger)}, {last.Changes} Änderungen, {last.Errors} Fehler)")}");
         Console.WriteLine($"Dokumente:      {stats.LiveDocuments} vorhanden, {stats.DeletedDocuments} gelöscht (gesichert)");
         Console.WriteLine($"Versionen:      {stats.Versions}");
-        Console.WriteLine($"Archivgröße:    {DisplayText.Size(stats.StoredBytes)} (Originalgröße {DisplayText.Size(stats.OriginalBytes)})");
+        Console.WriteLine($"Archivgröße:    {DisplayText.Size(stats.StoredBytes)} (alle Versionen zusammen {DisplayText.Size(stats.OriginalBytes)}, gleiche Inhalte nur einmal gespeichert)");
     }
     catch (TargetNotConnectedException)
     {
@@ -282,9 +282,9 @@ int Verify()
         Console.WriteLine($"Alle {result.Checked} gesicherten Inhalte sind in Ordnung.");
         return 0;
     }
-    Console.WriteLine($"{result.DamagedOrMissing.Count} von {result.Checked} Inhalten sind beschädigt oder fehlen:");
-    foreach (var hash in result.DamagedOrMissing)
-        Console.WriteLine($"  {hash}");
+    Console.WriteLine($"{result.DamagedOrMissing.Count} von {result.Checked} Inhalten sind beschädigt oder fehlen (Pfade im Ordner \"Dateien\"):");
+    foreach (var path in result.DamagedOrMissing)
+        Console.WriteLine($"  {path}");
     return 4;
 }
 

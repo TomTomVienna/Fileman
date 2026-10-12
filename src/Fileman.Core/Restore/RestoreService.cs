@@ -18,7 +18,7 @@ public sealed class RestoreService(BackupArchive archive)
         var directory = targetDirectory is null ? Path.GetDirectoryName(version.Path)! : PathUtil.Normalize(targetDirectory);
         Directory.CreateDirectory(directory);
         var target = FreeTargetPath(directory, Path.GetFileName(version.Path), version.LastWriteUtc);
-        archive.Blobs.ExtractTo(version.Hash, target, cancellationToken);
+        archive.Store.ExtractTo(StoredPath(version), version.Hash, target, cancellationToken);
         File.SetLastWriteTimeUtc(target, version.LastWriteUtc);
         return target;
     }
@@ -32,11 +32,15 @@ public sealed class RestoreService(BackupArchive archive)
         if (File.Exists(target))
             return target;
         Directory.CreateDirectory(directory);
-        archive.Blobs.ExtractTo(version.Hash, target, cancellationToken);
+        archive.Store.ExtractTo(StoredPath(version), version.Hash, target, cancellationToken);
         File.SetLastWriteTimeUtc(target, version.LastWriteUtc);
         File.SetAttributes(target, FileAttributes.ReadOnly);
         return target;
     }
+
+    /// <summary>Die Versionsdatei; falls sie von Hand entfernt wurde, eine andere Datei mit gleichem Inhalt.</summary>
+    private string StoredPath(VersionRecord version) =>
+        archive.Store.Exists(version.ArchivePath) ? version.ArchivePath : archive.Catalog.GetBlobPath(version.Hash) ?? version.ArchivePath;
 
     private VersionRecord GetVersion(long versionId) =>
         archive.Catalog.GetVersion(versionId) ?? throw new FilemanException($"Version {versionId} ist im Archiv nicht vorhanden.");

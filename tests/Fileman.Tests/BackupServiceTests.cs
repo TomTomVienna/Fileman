@@ -123,7 +123,7 @@ public class BackupServiceTests : IAsyncLifetime
         var versions = _env.WithCatalog(c => c.GetVersions(_env.SingleDocument("Bilanz").Id));
         Assert.Equal(3, versions.Count);
         using var archive = BackupArchive.Open(_env.ArchiveDir, readOnly: true);
-        using var reader = new StreamReader(archive.Blobs.OpenRead(versions[1].Hash));
+        using var reader = new StreamReader(archive.Store.OpenRead(versions[1].ArchivePath));
         Assert.Equal("Stand 2 (unterwegs)", reader.ReadToEnd());
     }
 

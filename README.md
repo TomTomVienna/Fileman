@@ -24,17 +24,31 @@ Wichtigster Einstiegspunkt für Oberflächen ist `FilemanWorkspace`. Er übernim
 
 ### Archiv auf der Sicherungsplatte
 
+Die Ablage ist **auch ohne Fileman lesbar**. Im Notfall findet man die Dateien mit dem Explorer.
+
 ```
 E:\FilemanArchiv\
-  fileman-target.json     Kennung der Platte. Damit wird sie auch unter anderem Laufwerksbuchstaben gefunden.
-  catalog.db              SQLite-Katalog: Dokumente, Versionen, Pfadverlauf, Ereignisse.
-  blobs\ab\cd\<sha256>.gz Dateiinhalte. Jeder Inhalt genau einmal, gzip-komprimiert, schreibgeschützt.
-  fileman.lock            Verhindert, dass zwei Programme gleichzeitig schreiben.
+  LIESMICH.txt                         Erklärung der Struktur für den Notfall
+  Dateien\D\Mandanten\Huber GmbH\      Ordnerstruktur der Quellen (erster Ordner = Laufwerk, "UNC" für Netzwerkpfade)
+    Bilanz.xlsx                        zuletzt gesicherter Stand unter exaktem Namen
+    Bilanz (2026-10-01 09-10).xlsx     jede Version mit ihrem Änderungszeitpunkt
+    Bilanz (2026-10-12 14-32).xlsx
+  Dateien\D\Mandanten\Alt\
+    _Fileman – Ordner verschoben.txt   Hinweis im alten Ordner, wenn ein ganzer Ordner verschoben wurde
+  catalog.db                           SQLite-Katalog: Dokumente, Versionen, Pfadverlauf, Ereignisse
+  fileman-target.json                  Kennung der Platte, damit sie auch unter anderem Laufwerksbuchstaben gefunden wird
+  fileman.lock, tmp\                   Schreibsperre und Zwischenablage während einer Sicherung
 ```
 
-Lokal unter `%LOCALAPPDATA%\Fileman` (überschreibbar mit `FILEMAN_HOME` oder `--home`) liegen:
-- `settings.json`
-- `catalog-cache.db`: eine Kopie des Katalogs. Damit funktioniert die Suche auch ohne angesteckte Platte.
+- **Gelöschte Dateien** bleiben mit allen Versionen liegen.
+- **Verschobene oder umbenannte Dateien:**
+  - Im alten Ordner bleiben die bisherigen Versionen und der letzte Stand.
+  - Im neuen Ordner erscheinen alle Versionen unter dem neuen Namen.
+- **Ordner-Verschiebungen** erhalten einen Hinweis. Ein Ordner gilt als verschoben, wenn der alte Ordner nicht mehr existiert. Den Hinweis bekommt nur der oberste verschobene Ordner.
+- **Hardlinks** (NTFS) speichern gleiche Inhalte, also den aktuellen Stand, Kopien nach Verschiebungen und identische Dateien, nur einmal. Auf Dateisystemen ohne Hardlinks wird kopiert. Deshalb sollte die SSD mit **NTFS** formatiert sein.
+- Alle Dateien im Archiv sind **schreibgeschützt**. Gleichnamige Dateien des Anwenders werden nie überschrieben. Ein abweichender Name bekommt Sekunden oder einen Zähler.
+- Der Katalog ist für Fileman da (Suche, Wiedererkennung, Vergleich). Die Dateien selbst hängen nicht von ihm ab.
+- **Lange Pfade:** Fileman kommt mit Pfaden über 260 Zeichen zurecht, der Windows-Explorer unter Umständen nicht. Kurze Ordnernamen am Ziel helfen, z. B. `E:\FilemanArchiv`.
 
 ### Wiedererkennung von Dokumenten
 
@@ -103,7 +117,7 @@ Als Kandidaten gelten Dokumente, die an ihrem bisherigen Ort fehlen. Dazu kommen
 
 - Ein **nicht erreichbarer Quellordner** wird übersprungen, z. B. ein getrenntes Netzlaufwerk. Seine Dateien werden **nicht** als gelöscht markiert.
 - Für **nicht lesbare Unterordner** gilt dasselbe, z. B. bei fehlenden Rechten. Sie werden als Warnung gemeldet.
-- Ein Inhalt wird erst in eine temporäre Datei geschrieben und dann umbenannt. Der Katalogeintrag folgt erst danach. Wird die Platte mitten in der Sicherung abgezogen, bleibt nichts halb Gesichertes zurück.
+- Ein Inhalt wird erst in `tmp` geschrieben und dann an seinen Platz verschoben. Der Katalogeintrag folgt erst danach. Wird die Platte mitten in der Sicherung abgezogen, bleibt nichts halb Gesichertes zurück.
 - Ändert sich eine Datei während des Lesens, versucht Fileman es erneut. Gelingt das nicht, folgt sie beim nächsten Lauf.
 - Das Archiv selbst wird nie mitgesichert, auch wenn es in einem Quellordner liegt.
 - Beim Wiederherstellen wird **nie überschrieben**. Ist der Name belegt, entsteht `Name (Stand 2026-10-12 14-32).ext`.

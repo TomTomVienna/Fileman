@@ -94,6 +94,6 @@ public class ParallelTests : IDisposable
         var rest = _env.Backup();
         Assert.Equal(300 - saved.LiveDocuments, rest.Created);
         Assert.Equal(300, _env.WithCatalog(c => c.GetStatistics()).Versions);
-        Assert.Empty(Directory.EnumerateFiles(Path.Combine(_env.ArchiveDir, "blobs", "tmp")));
+        Assert.Empty(Directory.EnumerateFiles(Path.Combine(_env.ArchiveDir, "tmp")));
     }
 }

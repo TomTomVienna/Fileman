@@ -28,7 +28,12 @@ public sealed class VersionRecord
     public string Path { get; set; } = "";
     public DateTime CapturedUtc { get; set; }
     public BackupTrigger Trigger { get; set; }
+    /// <summary>Datei im Archiv (relativ zum Ordner "Dateien"), z. B. "D\Mandanten\Bilanz (2026-10-12 14-32).xlsx".</summary>
+    public string ArchivePath { get; set; } = "";
 }
+
+/// <summary>Ein von Fileman im Archivordner "Dateien" angelegter Name.</summary>
+public sealed record ArchiveFileRecord(string RelativePath, string Hash, long DocumentId, bool IsCurrent);
 
 public sealed class PathChangeRecord
 {
@@ -86,6 +91,8 @@ public sealed class CatalogStatistics
     public int DeletedDocuments { get; set; }
     public int Versions { get; set; }
     public int Blobs { get; set; }
+    /// <summary>Summe aller Versionen (so viel Platz bräuchte man ohne Hardlinks/Deduplizierung).</summary>
     public long OriginalBytes { get; set; }
+    /// <summary>Tatsächlich belegter Platz (jeder Inhalt einmal).</summary>
     public long StoredBytes { get; set; }
 }

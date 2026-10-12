@@ -38,7 +38,9 @@ public static class VersionComparison
         };
         try
         {
-            using var content = archive.Blobs.OpenRead(version.Hash);
+            using var content = archive.Store.OpenRead(archive.Store.Exists(version.ArchivePath)
+                ? version.ArchivePath
+                : archive.Catalog.GetBlobPath(version.Hash) ?? version.ArchivePath);
             list.AddRange(DocumentMetadataReader.Read(content, version.Path));
         }
         catch (FilemanException ex)

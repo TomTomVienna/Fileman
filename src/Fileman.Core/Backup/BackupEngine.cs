@@ -45,12 +45,15 @@ public sealed class BackupEngine
     }
 
     private CatalogDatabase Catalog => _archive.Catalog;
-    private BlobStore Blobs => _archive.Blobs;
+    private ArchiveStore Store => _archive.Store;
 
     public Task<BackupResult> RunAsync(BackupOptions options, IProgress<BackupProgress>? progress = null, CancellationToken cancellationToken = default) =>
         new RunState(this, options, progress, cancellationToken).ExecuteAsync();
 
-    /// <summary>Lagert den Inhalt ein. Ändert sich die Datei währenddessen, wird es erneut versucht. Threadsicher.</summary>
+    /// <summary>
+    /// Kopiert den Inhalt in den temporären Bereich des Archivs und hasht ihn. Ändert sich die Datei währenddessen,
+    /// wird es erneut versucht. Threadsicher.
+    /// </summary>
     private IngestResult Ingest(string path, CancellationToken ct)
     {
         for (var attempt = 1; ; attempt++)
@@ -58,10 +61,11 @@ public sealed class BackupEngine
             var before = new FileInfo(path);
             if (!before.Exists)
                 throw new FileNotFoundException(null, path);
-            var content = Blobs.Store(path, ct);
+            var staged = Store.Stage(path, ct);
             var after = new FileInfo(path);
-            if (after.Exists && after.Length == before.Length && after.LastWriteTimeUtc == before.LastWriteTimeUtc && content.Size == after.Length)
-                return new IngestResult(content, after.Length, after.LastWriteTimeUtc);
+            if (after.Exists && after.Length == before.Length && after.LastWriteTimeUtc == before.LastWriteTimeUtc && staged.Size == after.Length)
+                return new IngestResult(staged, after.Length, after.LastWriteTimeUtc);
+            ArchiveStore.Discard(staged.TempPath);
             if (attempt >= MaxReadAttempts)
                 throw new IOException("Die Datei wurde während der Sicherung verändert und wird beim nächsten Lauf gesichert.");
             ct.WaitHandle.WaitOne(TimeSpan.FromMilliseconds(300 * attempt));
@@ -69,7 +73,10 @@ public sealed class BackupEngine
         }
     }
 
-    private sealed record IngestResult(StoredContent Content, long Size, DateTime LastWriteUtc);
+    private sealed record IngestResult(StagedContent Staged, long Size, DateTime LastWriteUtc)
+    {
+        public string Hash => Staged.Hash;
+    }
 
     /// <summary>Was ein Arbeits-Thread für eine Datei vorbereitet hat.</summary>
     private sealed record PreparedFile(DiskFile File, string? FileId, IngestResult? Content, Exception? Error);
@@ -83,6 +90,8 @@ public sealed class BackupEngine
         private readonly HashSet<long> _unclaimed = [];
         private readonly List<DocumentRecord> _missing = [];
         private List<DocumentRecord> _recentlyDeleted = [];
+        private readonly List<(string OldPath, string NewPath)> _moves = [];
+        private ArchiveLayout? _layout;
         private long _runId;
         private DateTime _now;
 
@@ -92,6 +101,7 @@ public sealed class BackupEngine
             FrozenDictionary<string, (long, DateTime)[]>.Empty;
 
         private CatalogDatabase Catalog => engine.Catalog;
+        private ArchiveLayout Layout => _layout!;
 
         public async Task<BackupResult> ExecuteAsync()
         {
@@ -100,6 +110,7 @@ public sealed class BackupEngine
             _runId = Catalog.StartRun(options.Trigger, _now);
             _result.RunId = _runId;
             _result.Trigger = options.Trigger;
+            _layout = new ArchiveLayout(engine.Store, Catalog, _now);
 
             var completed = false;
             try
@@ -126,6 +137,7 @@ public sealed class BackupEngine
                 Report(BackupPhase.Finishing, toProcess.Count, toProcess.Count, null);
                 foreach (var doc in _missing.Where(d => _unclaimed.Contains(d.Id)))
                     MarkDeleted(doc);
+                WriteFolderMoveMarkers();
 
                 completed = true;
                 return _result;
@@ -134,6 +146,7 @@ public sealed class BackupEngine
             {
                 // Auch bei Abbruch bleibt alles bereits Gesicherte erhalten.
                 Catalog.Commit();
+                _result.BytesStored = _layout?.BytesStored ?? 0;
                 _result.FinishedUtc = engine._time.GetUtcNow().UtcDateTime;
                 Catalog.FinishRun(_runId, _result.FinishedUtc, _result.FilesScanned, _result.TotalChanges,
                     _result.Errors.Count + (completed ? 0 : 1));
@@ -288,6 +301,9 @@ public sealed class BackupEngine
                 try { await producer.ConfigureAwait(false); } catch (Exception) { }
                 // Der Erzeuger ist beendet, "started" ändert sich nicht mehr.
                 try { await Task.WhenAll(started).ConfigureAwait(false); } catch (Exception) { }
+                // Nicht verbrauchte Vorbereitungen entfernen (abgelegte sind bereits verschoben).
+                foreach (var work in started.Where(t => t.IsCompletedSuccessfully && t.Result.Content is not null))
+                    ArchiveStore.Discard(work.Result.Content!.Staged.TempPath);
             }
         }
 
@@ -318,13 +334,12 @@ public sealed class BackupEngine
 
         private void Apply(PreparedFile prepared)
         {
+            IngestResult? fallback = null;
             try
             {
                 if (prepared.Error is not null)
                     ExceptionDispatchInfo.Throw(prepared.Error);
-                if (prepared.Content is not null)
-                    Register(prepared.Content);
-                ProcessFile(prepared.File, prepared.FileId, prepared.Content);
+                ProcessFile(prepared.File, prepared.FileId, prepared.Content, read => fallback = read);
             }
             catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
             {
@@ -334,18 +349,19 @@ public sealed class BackupEngine
             {
                 _result.Errors.Add(new BackupError(prepared.File.Path, ex.Message));
             }
-        }
-
-        private void Register(IngestResult content)
-        {
-            Catalog.EnsureBlob(content.Content.Hash, content.Size, content.Content.StoredSize, _now);
-            if (content.Content.IsNew)
-                _result.BytesStored += content.Content.StoredSize;
+            finally
+            {
+                // Nicht benötigte Vorbereitungen (z. B. Inhalt unverändert) entfernen; abgelegte sind bereits verschoben.
+                if (prepared.Content is not null)
+                    ArchiveStore.Discard(prepared.Content.Staged.TempPath);
+                if (fallback is not null)
+                    ArchiveStore.Discard(fallback.Staged.TempPath);
+            }
         }
 
         // ---------- Zuordnung (nur Katalog-Thread) ----------
 
-        private void ProcessFile(DiskFile file, string? fileId, IngestResult? prepared)
+        private void ProcessFile(DiskFile file, string? fileId, IngestResult? prepared, Action<IngestResult> onFallbackRead)
         {
             var key = PathUtil.Key(file.Path);
             // Falls ein Arbeits-Thread den Inhalt nicht gelesen hat, er aber doch gebraucht wird (selten): jetzt lesen.
@@ -354,7 +370,7 @@ public sealed class BackupEngine
                 if (prepared is null)
                 {
                     prepared = engine.Ingest(file.Path, ct);
-                    Register(prepared);
+                    onFallbackRead(prepared);
                 }
                 return prepared;
             }
@@ -369,13 +385,16 @@ public sealed class BackupEngine
                     return;
                 }
                 var stored = Content();
-                if (stored.Content.Hash != existing.Hash)
+                var changed = stored.Hash != existing.Hash;
+                if (changed)
                     AddVersion(existing, file.Path, stored, ChangeKind.Modified);
                 existing.Size = stored.Size;
                 existing.LastWriteUtc = stored.LastWriteUtc;
-                existing.Hash = stored.Content.Hash;
+                existing.Hash = stored.Hash;
                 SetFileId(existing, fileId);
                 Catalog.UpdateDocument(existing);
+                if (changed)
+                    Layout.SetCurrent(existing);
                 return;
             }
 
@@ -389,7 +408,7 @@ public sealed class BackupEngine
 
             var content = Content();
             // 3. Gleicher Inhalt: z. B. über Laufwerksgrenzen verschoben oder kopiert und Original gelöscht.
-            candidate ??= FindByHash(content.Content.Hash, Path.GetFileName(file.Path));
+            candidate ??= FindByHash(content.Hash, Path.GetFileName(file.Path));
             // 4. Gleicher Name unter den fehlenden Dateien (genau ein Treffer): verschoben und dabei geändert.
             candidate ??= FindBySingleName(Path.GetFileName(file.Path));
 
@@ -406,13 +425,14 @@ public sealed class BackupEngine
                 FileId = fileId,
                 Size = content.Size,
                 LastWriteUtc = content.LastWriteUtc,
-                Hash = content.Content.Hash,
+                Hash = content.Hash,
                 FirstSeenUtc = _now,
             };
             Catalog.InsertDocument(doc);
             _byPath[key] = doc;
             IndexFileId(doc);
             AddVersion(doc, file.Path, content, ChangeKind.Created);
+            Layout.SetCurrent(doc);
         }
 
         private void IndexFileId(DocumentRecord doc)
@@ -463,6 +483,10 @@ public sealed class BackupEngine
 
             if (!string.Equals(oldPath, newPath, StringComparison.Ordinal))
             {
+                // Im alten Archivordner bleibt alles liegen; im neuen erscheinen alle bisherigen Versionen (Hardlinks).
+                Layout.ReplicateVersions(doc);
+                Layout.SetCurrent(doc);
+                _moves.Add((oldPath, newPath));
                 Catalog.InsertPathChange(new PathChangeRecord { DocumentId = doc.Id, OldPath = oldPath, NewPath = newPath, ChangedUtc = _now });
                 var sameFolder = string.Equals(Path.GetDirectoryName(oldPath), Path.GetDirectoryName(newPath), PathUtil.Comparison);
                 AddEvent(doc, sameFolder ? ChangeKind.Renamed : ChangeKind.Moved, oldPath);
@@ -474,15 +498,19 @@ public sealed class BackupEngine
                 _result.Created++;
             }
 
+            var changed = false;
             if (stored is not null)
             {
-                if (stored.Content.Hash != doc.Hash)
+                changed = stored.Hash != doc.Hash;
+                if (changed)
                     AddVersion(doc, newPath, stored, ChangeKind.Modified);
                 doc.Size = stored.Size;
                 doc.LastWriteUtc = stored.LastWriteUtc;
-                doc.Hash = stored.Content.Hash;
+                doc.Hash = stored.Hash;
             }
             Catalog.UpdateDocument(doc);
+            if (changed || wasDeleted)
+                Layout.SetCurrent(doc);
         }
 
         private void SetFileId(DocumentRecord doc, string? fileId)
@@ -504,10 +532,12 @@ public sealed class BackupEngine
 
         private void AddVersion(DocumentRecord doc, string path, IngestResult stored, ChangeKind kind)
         {
+            var archivePath = Layout.PlaceVersion(doc.Id, path, stored.Hash, stored.Size, stored.LastWriteUtc, stored.Staged);
             Catalog.InsertVersion(new VersionRecord
             {
                 DocumentId = doc.Id,
-                Hash = stored.Content.Hash,
+                Hash = stored.Hash,
+                ArchivePath = archivePath,
                 Size = stored.Size,
                 LastWriteUtc = stored.LastWriteUtc,
                 Path = path,
@@ -526,6 +556,46 @@ public sealed class BackupEngine
             var change = new ChangeEvent { Utc = _now, DocumentId = doc.Id, Kind = kind, Path = doc.Path, OldPath = oldPath };
             Catalog.InsertEvent(change);
             _result.Changes.Add(change);
+        }
+
+        /// <summary>
+        /// Wurde ein ganzer Ordner verschoben oder umbenannt (alter Ordner existiert nicht mehr, neuer schon),
+        /// bekommt der alte Archivordner eine Hinweisdatei mit dem neuen Ort – jeweils nur der oberste verschobene Ordner.
+        /// </summary>
+        private void WriteFolderMoveMarkers()
+        {
+            var folderMoves = new List<(string Old, string New)>();
+            foreach (var (oldPath, newPath) in _moves)
+            {
+                var oldDir = Path.GetDirectoryName(oldPath);
+                var newDir = Path.GetDirectoryName(newPath);
+                (string, string)? topmost = null;
+                while (oldDir is not null && newDir is not null)
+                {
+                    if (!Directory.Exists(oldDir) && Directory.Exists(newDir))
+                        topmost = (oldDir, newDir);
+                    // Weiter nach oben nur, solange die Ordnernamen übereinstimmen (gleiche Struktur unterhalb).
+                    if (!string.Equals(Path.GetFileName(oldDir), Path.GetFileName(newDir), PathUtil.Comparison))
+                        break;
+                    oldDir = Path.GetDirectoryName(oldDir);
+                    newDir = Path.GetDirectoryName(newDir);
+                }
+                if (topmost is { } move && !folderMoves.Contains(move))
+                    folderMoves.Add(move);
+            }
+            foreach (var (oldDir, newDir) in folderMoves)
+            {
+                if (folderMoves.Any(other => !string.Equals(other.Old, oldDir, PathUtil.Comparison) && PathUtil.IsUnder(oldDir, other.Old)))
+                    continue; // liegt in einem ebenfalls verschobenen Ordner
+                try
+                {
+                    engine.Store.WriteMoveMarker(oldDir, newDir, _now);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    FilemanLog.Warn($"Hinweisdatei für verschobenen Ordner nicht geschrieben: {oldDir}: {ex.Message}");
+                }
+            }
         }
 
         private void Report(BackupPhase phase, int processed, int total, string? current) =>

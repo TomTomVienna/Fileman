@@ -7,8 +7,8 @@ namespace Fileman.Core.Storage;
 public sealed record StoredContent(string Hash, long Size, long StoredSize, bool IsNew);
 
 /// <summary>
-/// Inhaltsadressierter Speicher: jeder Dateiinhalt liegt genau einmal als blobs\ab\cd\&lt;sha256&gt;.gz.
-/// Vorhandene Blobs werden nie verändert oder gelöscht.
+/// Inhaltsadressierter, komprimierter Speicher (blobs\ab\cd\&lt;sha256&gt;.gz). Wird nur noch für den lokalen
+/// Zwischenspeicher verwendet; das Archiv auf der Sicherungsplatte ist lesbar abgelegt (<see cref="ArchiveStore"/>).
 /// </summary>
 public sealed class BlobStore
 {
@@ -77,38 +77,6 @@ public sealed class BlobStore
             }
             File.SetAttributes(finalPath, FileAttributes.ReadOnly);
             return new StoredContent(hash, size, storedSize, IsNew: true);
-        }
-        finally
-        {
-            if (File.Exists(temp))
-                File.Delete(temp);
-        }
-    }
-
-    /// <summary>Übernimmt einen Blob unverändert (bereits komprimiert) aus einem anderen Speicher, z. B. dem Zwischenspeicher.</summary>
-    /// <returns>Gespeicherte Größe, wenn der Blob neu ist; sonst 0.</returns>
-    public long ImportFrom(BlobStore source, string hash)
-    {
-        var finalPath = GetPath(hash);
-        if (File.Exists(finalPath))
-            return 0;
-        var temp = Path.Combine(TempDirectory, Guid.NewGuid().ToString("N") + ".tmp");
-        try
-        {
-            File.Copy(source.GetPath(hash), temp);
-            using (var stream = new FileStream(temp, FileMode.Open, FileAccess.ReadWrite))
-                stream.Flush(flushToDisk: true);
-            System.IO.Directory.CreateDirectory(Path.GetDirectoryName(finalPath)!);
-            try
-            {
-                File.Move(temp, finalPath);
-            }
-            catch (IOException) when (File.Exists(finalPath))
-            {
-                return 0;
-            }
-            File.SetAttributes(finalPath, FileAttributes.ReadOnly);
-            return new FileInfo(finalPath).Length;
         }
         finally
         {

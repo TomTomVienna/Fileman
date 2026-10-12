@@ -21,14 +21,15 @@ public sealed class BackupArchive : IDisposable
         Marker = marker;
         _lock = lockStream;
         IsReadOnly = readOnly;
-        Blobs = new BlobStore(Path.Combine(directory, "blobs"));
+        Store = new ArchiveStore(directory);
         Catalog = CatalogDatabase.Open(Path.Combine(directory, CatalogFileName), readOnly);
     }
 
     public string Directory { get; }
     public TargetMarker Marker { get; }
     public CatalogDatabase Catalog { get; }
-    public BlobStore Blobs { get; }
+    /// <summary>Die lesbare Ablage (Ordner "Dateien").</summary>
+    public ArchiveStore Store { get; }
     public bool IsReadOnly { get; }
 
     /// <summary>Richtet ein neues Archiv ein (Ordner und Markierungsdatei).</summary>
@@ -41,6 +42,7 @@ public sealed class BackupArchive : IDisposable
         var marker = new TargetMarker { Id = Guid.NewGuid(), Name = name, CreatedUtc = DateTime.UtcNow };
         marker.Write(directory);
         CatalogDatabase.Open(Path.Combine(directory, CatalogFileName)).Dispose();
+        File.WriteAllText(Path.Combine(directory, "LIESMICH.txt"), ReadmeText);
         return marker;
     }
 
@@ -70,7 +72,7 @@ public sealed class BackupArchive : IDisposable
         {
             var archive = new BackupArchive(directory, marker, lockStream, readOnly);
             if (!readOnly)
-                archive.Blobs.CleanupTemp();
+                archive.Store.CleanupTemp();
             return archive;
         }
         catch
@@ -79,6 +81,37 @@ public sealed class BackupArchive : IDisposable
             throw;
         }
     }
+
+    private const string ReadmeText = """
+        FILEMAN – SICHERUNGSARCHIV
+        ==========================
+
+        Dieses Laufwerk enthält Sicherungskopien, die das Programm Fileman angelegt hat.
+        Alle Dateien sind auch OHNE Fileman zugänglich:
+
+        Ordner "Dateien"
+          Darunter liegt die Ordnerstruktur der gesicherten Quellordner. Der erste Ordner ist
+          der Laufwerksbuchstabe (z. B. "D" für D:\), Netzwerkpfade beginnen mit "UNC".
+
+          In jedem Ordner liegt
+            - der zuletzt gesicherte Stand unter dem exakten Dateinamen, z. B.  Bilanz.xlsx
+            - jede gesicherte Version mit ihrem Änderungszeitpunkt, z. B.     Bilanz (2026-10-12 14-32).xlsx
+
+          Gelöschte Dateien bleiben hier erhalten.
+          Wurde eine Datei verschoben oder umbenannt, liegen ihre Versionen sowohl im alten als auch
+          im neuen Ordner. Wurde ein ganzer Ordner verschoben, steht im alten Ordner die Datei
+          "_Fileman – Ordner verschoben.txt" mit dem neuen Ort.
+
+          Gleiche Inhalte belegen dank „Hardlinks“ nur einmal Platz, auch wenn sie mehrfach erscheinen.
+          Die Dateien sind schreibgeschützt. Zum Bearbeiten bitte erst an einen anderen Ort kopieren.
+
+        catalog.db           Verzeichnis aller Versionen für Fileman (SQLite-Datenbank).
+        fileman-target.json  Kennung dieses Laufwerks. Damit erkennt Fileman es auch unter anderem Laufwerksbuchstaben.
+        fileman.lock         Verhindert, dass zwei Fileman-Programme gleichzeitig schreiben.
+        tmp                  Zwischenablage während einer Sicherung (kann gelöscht werden, wenn Fileman nicht läuft).
+
+        Bitte in diesem Ordner nichts umbenennen oder löschen.
+        """;
 
     public void Dispose()
     {

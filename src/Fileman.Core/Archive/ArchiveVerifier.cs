@@ -5,22 +5,23 @@ public sealed record VerifyResult(int Checked, IReadOnlyList<string> DamagedOrMi
 /// <summary>Prüft alle gesicherten Inhalte gegen ihre Prüfsumme (parallel).</summary>
 public static class ArchiveVerifier
 {
+    /// <returns>Beschädigte oder fehlende Dateien (relativ zum Ordner "Dateien").</returns>
     public static VerifyResult Verify(BackupArchive archive, IProgress<(int Done, int Total)>? progress = null,
         CancellationToken cancellationToken = default, int parallelism = 0)
     {
-        var hashes = archive.Catalog.GetAllBlobHashes();
+        var blobs = archive.Catalog.GetAllBlobs();
         var bad = new System.Collections.Concurrent.ConcurrentBag<string>();
         var done = 0;
-        Parallel.ForEach(hashes, new ParallelOptions
+        Parallel.ForEach(blobs, new ParallelOptions
         {
             CancellationToken = cancellationToken,
             MaxDegreeOfParallelism = parallelism > 0 ? parallelism : Backup.BackupOptions.DefaultFileParallelism,
-        }, hash =>
+        }, blob =>
         {
-            if (!archive.Blobs.Verify(hash))
-                bad.Add(hash);
-            progress?.Report((Interlocked.Increment(ref done), hashes.Count));
+            if (!archive.Store.Verify(blob.StoredPath, blob.Hash))
+                bad.Add(blob.StoredPath);
+            progress?.Report((Interlocked.Increment(ref done), blobs.Count));
         });
-        return new VerifyResult(hashes.Count, [.. bad.Order(StringComparer.Ordinal)]);
+        return new VerifyResult(blobs.Count, [.. bad.Order(StringComparer.Ordinal)]);
     }
 }

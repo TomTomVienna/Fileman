@@ -35,15 +35,15 @@ public class ArchiveTests : IDisposable
         _env.Write(Path.Combine(_env.RootA, "b.txt"), "bbb");
         _env.Backup();
         using var archive = BackupArchive.Open(_env.ArchiveDir, readOnly: true);
-        var hash = archive.Catalog.GetAllBlobHashes()[0];
-        var blob = archive.Blobs.GetPath(hash);
-        File.SetAttributes(blob, FileAttributes.Normal);
-        File.WriteAllBytes(blob, [1, 2, 3]);
+        var stored = archive.Catalog.GetAllBlobs()[0].StoredPath;
+        var file = archive.Store.FullPath(stored);
+        File.SetAttributes(file, FileAttributes.Normal);
+        File.WriteAllBytes(file, [1, 2, 3]);
 
         var result = ArchiveVerifier.Verify(archive);
 
         Assert.Equal(2, result.Checked);
-        Assert.Equal(hash, Assert.Single(result.DamagedOrMissing));
+        Assert.Equal(stored, Assert.Single(result.DamagedOrMissing));
     }
 
     [Fact]
