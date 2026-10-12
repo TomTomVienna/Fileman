@@ -14,6 +14,10 @@ public static class SettingsStore
         return JsonSerializer.Deserialize<FilemanSettings>(stream, JsonOptions) ?? new FilemanSettings();
     }
 
+    /// <summary>Unabhängige Kopie, z. B. zum Bearbeiten in einem Dialog.</summary>
+    public static FilemanSettings Clone(FilemanSettings settings) =>
+        JsonSerializer.Deserialize<FilemanSettings>(JsonSerializer.Serialize(settings, JsonOptions), JsonOptions)!;
+
     /// <summary>Speichert atomar (erst temporäre Datei, dann ersetzen), damit nie eine halbe Datei entsteht.</summary>
     public static void Save(FilemanSettings settings, string file)
     {

@@ -74,7 +74,14 @@ public sealed class FilemanWorkspace
         if (found is not null && !string.Equals(found, target.LastKnownPath, PathUtil.Comparison))
         {
             target.LastKnownPath = found;
-            SaveSettings();
+            // Nur den Pfad nachtragen: frisch von der Platte lesen, damit gleichzeitig gespeicherte Änderungen
+            // (z. B. aus dem Einstellungsfenster) nicht überschrieben werden.
+            var current = SettingsStore.Load(Paths.SettingsFile);
+            if (current.Target?.Id == target.Id)
+            {
+                current.Target.LastKnownPath = found;
+                SettingsStore.Save(current, Paths.SettingsFile);
+            }
         }
         return found;
     }

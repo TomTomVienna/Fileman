@@ -294,7 +294,7 @@ public sealed class BackupService : IAsyncDisposable
                 SpoolPending(settings, stop);
             var spooled = _workspace.Spool.Count;
             SetState(ServiceStatus.TargetMissing,
-                spooled > 0 ? $"Sicherungsplatte nicht angesteckt – {spooled} Änderungen warten im Zwischenspeicher." : "Sicherungsplatte nicht angesteckt.");
+                spooled > 0 ? $"{spooled} Änderungen warten im Zwischenspeicher." : null);
             return;
         }
 

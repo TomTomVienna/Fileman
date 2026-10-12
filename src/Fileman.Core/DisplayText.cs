@@ -1,9 +1,11 @@
 using System.Globalization;
+using Fileman.Core.Automation;
 using Fileman.Core.Catalog;
 
-namespace Fileman.Cli;
+namespace Fileman.Core;
 
-internal static class Format
+/// <summary>Deutsche Anzeigetexte für Oberflächen (CLI und Tray-Anwendung).</summary>
+public static class DisplayText
 {
     private static readonly CultureInfo German = CultureInfo.GetCultureInfo("de-AT");
 
@@ -31,6 +33,18 @@ internal static class Format
         ChangeKind.Deleted => "gelöscht",
         ChangeKind.Recreated => "wieder da",
         _ => kind.ToString(),
+    };
+
+    public static string Status(ServiceStatus status) => status switch
+    {
+        ServiceStatus.NotConfigured => "Nicht eingerichtet",
+        ServiceStatus.Idle => "Alles gesichert",
+        ServiceStatus.Pending => "Änderungen erkannt",
+        ServiceStatus.Running => "Sicherung läuft",
+        ServiceStatus.TargetMissing => "Sicherungsplatte nicht angesteckt",
+        ServiceStatus.Paused => "Pausiert",
+        ServiceStatus.Error => "Fehler",
+        _ => status.ToString(),
     };
 
     public static string Trigger(BackupTrigger trigger) => trigger switch

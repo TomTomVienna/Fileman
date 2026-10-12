@@ -13,8 +13,8 @@ Versionssicherung für lokal verwaltete Dateien auf eine USB-SSD. Fileman ist f�
 |---|---|
 | `src/Fileman.Core` | Gesamte Logik als Bibliothek, ohne Oberfläche. Einzige Abhängigkeit: `Microsoft.Data.Sqlite`. |
 | `src/Fileman.Cli` | Kommandozeile `fileman`, eine dünne Schicht über dem Kern. Gedacht für Support, Skripte und Aufgabenplanung. |
+| `src/Fileman.App` | WinForms-Tray-Anwendung (`Fileman.exe`) über demselben Kern. |
 | `tests/Fileman.Tests` | xUnit-Tests der Kernlogik. Laufen unter Windows und Linux. |
-| *(folgt)* `src/Fileman.App` | WinForms-Tray-Anwendung über demselben Kern. |
 
 Wichtigster Einstiegspunkt für Oberflächen ist `FilemanWorkspace`. Er übernimmt:
 - Einstellungen laden
@@ -59,6 +59,46 @@ Als Kandidaten gelten Dokumente, die an ihrem bisherigen Ort fehlen. Dazu kommen
   - Erstsicherung: 96 s mit 1 Thread, 26 s mit 8 Threads.
   - Delta-Lauf ohne Änderungen: unter 1 s.
 
+### Automatik-Modus (`BackupService`)
+
+- Ein **FileSystemWatcher** pro Quellordner sammelt nur die betroffenen Pfade.
+- Nach der **Ruhezeit** (`DebounceSeconds`, Standard 10 s) wird gezielt in diesen Bereichen gesichert. Spätestens nach 2 Minuten wird auch dann gesichert, wenn sich laufend etwas ändert.
+- Jeder Pfad wird rekursiv geprüft. Dadurch werden auch umbenannte oder verschobene Ordner samt Inhalt erkannt.
+- **Vollständiger Abgleich** findet statt:
+  - beim Start
+  - nach einem Pufferüberlauf des Wächters
+  - wenn ein Quellordner wieder erreichbar ist
+  - nach dem Anstecken der Platte
+  - regelmäßig, standardmäßig alle 60 Minuten
+- **Ohne angesteckte Platte** werden geänderte Dateien lokal zwischengespeichert, standardmäßig bis 2 GB:
+  - Speicherort ist `%LOCALAPPDATA%\Fileman\spool`.
+  - Beim Anstecken folgt erst ein vollständiger Abgleich. Danach werden die Zwischenstände als zusätzliche Versionen übernommen.
+- **„Jetzt sichern“** läuft auch dann, wenn die Automatik pausiert ist.
+- Probleme landen im Protokoll `%LOCALAPPDATA%\Fileman\fileman.log`.
+
+### Tray-Anwendung
+
+- **Symbol im Infobereich**, die Farbe zeigt den Zustand:
+  - grün: alles gesichert
+  - blau: Änderungen erkannt oder Sicherung läuft
+  - gelb: Platte nicht angesteckt
+  - rot: Fehler
+  - grau: pausiert
+- **Linksklick** öffnet das Popup **„Letzte Änderungen“**. Ein Doppelklick auf einen Eintrag zeigt dessen Versionen.
+- **Archiv durchsuchen:**
+  - Suche nach Name oder Ordner, auch über frühere Pfade
+  - Versionen und Pfadverlauf
+  - **Ansehen**: schreibgeschützt mit dem Standardprogramm
+  - **Wiederherstellen**: nie überschreibend
+  - **Vergleichen**: Datei-Eigenschaften sowie Office- und PDF-Eigenschaften nebeneinander, Unterschiede markiert
+- **Einstellungen:**
+  - Quellordner
+  - Sicherungsplatte (ein vorhandenes Archiv wird übernommen)
+  - Start mit Windows
+  - Ruhezeit
+  - Ausnahmen
+- Läuft nur einmal pro Benutzer. Beim ersten Start öffnen sich die Einstellungen.
+
 ### Sicherheitsregeln im Kern
 
 - Ein **nicht erreichbarer Quellordner** wird übersprungen, z. B. ein getrenntes Netzlaufwerk. Seine Dateien werden **nicht** als gelöscht markiert.
@@ -82,6 +122,7 @@ fileman show 42                                  Pfadverlauf und Versionen von D
 fileman changes --count 30                       letzte Änderungen
 fileman restore 117 --to C:\Temp                 Version 117 wiederherstellen
 fileman verify                                   alle Inhalte auf Beschädigung prüfen
+fileman watch                                    Automatik-Modus im Konsolenfenster (Test/Support)
 ```
 
 ## Bauen und Testen
@@ -91,12 +132,15 @@ Voraussetzung: .NET 10 SDK (LTS, Support bis November 2028).
 ```
 dotnet build
 dotnet test
+dotnet publish src/Fileman.App -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 dotnet publish src/Fileman.Cli -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 ```
 
+Die Tray-Anwendung lässt sich dank `EnableWindowsTargeting` auch unter Linux bauen. Ausführen lässt sie sich nur unter Windows.
+
 ## Nächste Schritte
 
-- **Automatik-Modus:** FileSystemWatcher mit Ruhezeit und regelmäßigem Abgleich, dazu ein lokaler Zwischenspeicher, solange die SSD nicht angesteckt ist.
-- **Tray-Anwendung (WinForms):**
-  - Popup „Letzte Änderungen“
-  - Archiv-Browser mit Ansehen, Wiederherstellen und Metadaten-Vergleich
+- Erste Tests der Tray-Anwendung unter Windows (Layout, Benachrichtigungen, NTFS-Datei-ID).
+- Schutz vor Massenänderungen: Automatik pausieren und warnen, wenn plötzlich sehr viele Dateien geändert werden (Verdacht auf einen Erpressungstrojaner).
+- Optionale Verschlüsselung des Archivs.
+- Installations- bzw. Verteilpaket.

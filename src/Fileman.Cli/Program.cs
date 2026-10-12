@@ -2,6 +2,7 @@ using System.Text;
 using Fileman.Cli;
 using Fileman.Core;
 using Fileman.Core.Archive;
+using Fileman.Core.Automation;
 using Fileman.Core.Backup;
 using Fileman.Core.Catalog;
 using Fileman.Core.Configuration;
@@ -41,6 +42,7 @@ try
         "changes" => Changes(rest),
         "restore" => Restore(rest),
         "verify" => Verify(),
+        "watch" => await WatchAsync(),
         _ => throw new UsageException($"Unbekannter Befehl \"{command}\". Hilfe: fileman --help"),
     };
 }
@@ -68,10 +70,7 @@ catch (Exception ex)
 
 int InitTarget(Arguments a)
 {
-    var directory = a.Require(0, "der Ordner auf der Sicherungsplatte, z. B. E:\\");
-    // Wird nur ein Laufwerk angegeben, kommt das Archiv in einen eigenen Unterordner.
-    if (string.Equals(Path.GetFullPath(directory), Path.GetPathRoot(Path.GetFullPath(directory)), StringComparison.OrdinalIgnoreCase))
-        directory = Path.Combine(directory, BackupArchive.DefaultFolderName);
+    var directory = FilemanWorkspace.ResolveTargetDirectory(a.Require(0, "der Ordner auf der Sicherungsplatte, z. B. E:\\"));
     var marker = workspace.InitializeTarget(directory, a.Option("name"));
     Console.WriteLine($"Sicherungsziel eingerichtet: {workspace.Settings.Target!.LastKnownPath}");
     Console.WriteLine($"Kennung: {marker.Id}");
@@ -136,7 +135,7 @@ async Task<int> BackupAsync()
     Console.WriteLine($"  geändert:         {result.Modified}");
     Console.WriteLine($"  verschoben:       {result.Moved}  (inkl. umbenannt)");
     Console.WriteLine($"  gelöscht:         {result.Deleted}  (gesicherte Stände bleiben erhalten)");
-    Console.WriteLine($"  neu geschrieben:  {Format.Size(result.BytesStored)}");
+    Console.WriteLine($"  neu geschrieben:  {DisplayText.Size(result.BytesStored)}");
     foreach (var root in result.SkippedRoots)
         Console.WriteLine($"WARNUNG: Quellordner nicht erreichbar, übersprungen: {root}");
     foreach (var unreadable in result.UnreadableDirectories)
@@ -169,7 +168,7 @@ int Status()
         {
             var drive = new DriveInfo(Path.GetPathRoot(located)!);
             if (drive.IsReady)
-                Console.WriteLine($"  freier Platz: {Format.Size(drive.AvailableFreeSpace)} von {Format.Size(drive.TotalSize)}");
+                Console.WriteLine($"  freier Platz: {DisplayText.Size(drive.AvailableFreeSpace)} von {DisplayText.Size(drive.TotalSize)}");
         }
         catch (Exception ex) when (ex is ArgumentException or IOException)
         {
@@ -184,10 +183,10 @@ int Status()
             Console.WriteLine("  (Angaben aus der lokalen Katalog-Kopie)");
         var stats = view.Catalog.GetStatistics();
         var last = view.Catalog.GetLastRun();
-        Console.WriteLine($"Letzte Sicherung: {(last is null ? "noch keine" : $"{Format.Time(last.FinishedUtc!.Value)} ({Format.Trigger(last.Trigger)}, {last.Changes} Änderungen, {last.Errors} Fehler)")}");
+        Console.WriteLine($"Letzte Sicherung: {(last is null ? "noch keine" : $"{DisplayText.Time(last.FinishedUtc!.Value)} ({DisplayText.Trigger(last.Trigger)}, {last.Changes} Änderungen, {last.Errors} Fehler)")}");
         Console.WriteLine($"Dokumente:      {stats.LiveDocuments} vorhanden, {stats.DeletedDocuments} gelöscht (gesichert)");
         Console.WriteLine($"Versionen:      {stats.Versions}");
-        Console.WriteLine($"Archivgröße:    {Format.Size(stats.StoredBytes)} (Originalgröße {Format.Size(stats.OriginalBytes)})");
+        Console.WriteLine($"Archivgröße:    {DisplayText.Size(stats.StoredBytes)} (Originalgröße {DisplayText.Size(stats.OriginalBytes)})");
     }
     catch (TargetNotConnectedException)
     {
@@ -211,8 +210,8 @@ int Find(Arguments a)
     Console.WriteLine($"{"Nr",6}  {"Vers.",5}  {"Stand",-16}  Pfad");
     foreach (var doc in hits)
     {
-        var state = doc.IsDeleted ? $"  [gelöscht {Format.Time(doc.DeletedUtc!.Value)}]" : "";
-        Console.WriteLine($"{doc.Id,6}  {doc.VersionCount,5}  {Format.Time(doc.LastWriteUtc),-16}  {doc.Path}{state}");
+        var state = doc.IsDeleted ? $"  [gelöscht {DisplayText.Time(doc.DeletedUtc!.Value)}]" : "";
+        Console.WriteLine($"{doc.Id,6}  {doc.VersionCount,5}  {DisplayText.Time(doc.LastWriteUtc),-16}  {doc.Path}{state}");
     }
     if (hits.Count == 200)
         Console.WriteLine("… weitere Treffer; bitte Suche verfeinern.");
@@ -227,21 +226,21 @@ int Show(Arguments a)
     var doc = view.Catalog.GetDocument(id) ?? throw new FilemanException($"Dokument {id} gibt es nicht.");
     Console.WriteLine($"Dokument {doc.Id}: {doc.FileName}");
     Console.WriteLine($"  Pfad:          {doc.Path}");
-    Console.WriteLine($"  Status:        {(doc.IsDeleted ? $"gelöscht am {Format.Time(doc.DeletedUtc!.Value)}" : "vorhanden")}");
-    Console.WriteLine($"  erstmals gesehen: {Format.Time(doc.FirstSeenUtc)}");
+    Console.WriteLine($"  Status:        {(doc.IsDeleted ? $"gelöscht am {DisplayText.Time(doc.DeletedUtc!.Value)}" : "vorhanden")}");
+    Console.WriteLine($"  erstmals gesehen: {DisplayText.Time(doc.FirstSeenUtc)}");
 
     var history = view.Catalog.GetPathHistory(id);
     if (history.Count > 0)
     {
         Console.WriteLine("  Frühere Pfade:");
         foreach (var change in history)
-            Console.WriteLine($"    bis {Format.Time(change.ChangedUtc)}  {change.OldPath}");
+            Console.WriteLine($"    bis {DisplayText.Time(change.ChangedUtc)}  {change.OldPath}");
     }
 
     Console.WriteLine("  Versionen (neueste zuerst):");
     Console.WriteLine($"    {"Nr",6}  {"Dateistand",-16}  {"gesichert",-16}  {"Größe",10}  {"Art",-11}  Prüfsumme");
     foreach (var v in view.Catalog.GetVersions(id))
-        Console.WriteLine($"    {v.Id,6}  {Format.Time(v.LastWriteUtc),-16}  {Format.Time(v.CapturedUtc),-16}  {Format.Size(v.Size),10}  {Format.Trigger(v.Trigger),-11}  {v.Hash[..12]}");
+        Console.WriteLine($"    {v.Id,6}  {DisplayText.Time(v.LastWriteUtc),-16}  {DisplayText.Time(v.CapturedUtc),-16}  {DisplayText.Size(v.Size),10}  {DisplayText.Trigger(v.Trigger),-11}  {v.Hash[..12]}");
     Console.WriteLine("Wiederherstellen: fileman restore <Versions-Nr> [--to <ordner>]");
     return 0;
 }
@@ -253,7 +252,7 @@ int Changes(Arguments a)
     foreach (var e in view.Catalog.GetRecentEvents(count))
     {
         var detail = e.OldPath is null ? e.Path : $"{e.OldPath}  →  {e.Path}";
-        Console.WriteLine($"{Format.Time(e.Utc)}  {Format.Kind(e.Kind),-10}  {detail}");
+        Console.WriteLine($"{DisplayText.Time(e.Utc)}  {DisplayText.Kind(e.Kind),-10}  {detail}");
     }
     return 0;
 }
@@ -289,6 +288,40 @@ int Verify()
     return 4;
 }
 
+async Task<int> WatchAsync()
+{
+    FilemanLog.Configure(workspace.Paths.LogFile);
+    await using var service = new BackupService(workspace);
+    ServiceStatus? last = null;
+    service.StateChanged += (_, state) =>
+    {
+        if (state.Status == last || state.Status == ServiceStatus.Running)
+            return;
+        last = state.Status;
+        Console.WriteLine($"{DateTime.Now:HH:mm:ss}  {DisplayText.Status(state.Status)}{(state.Message is null ? "" : " – " + state.Message)}");
+    };
+    service.BackupCompleted += (_, result) =>
+    {
+        foreach (var change in result.Changes)
+            Console.WriteLine($"{DateTime.Now:HH:mm:ss}    {DisplayText.Kind(change.Kind),-10} {(change.OldPath is null ? change.Path : $"{change.OldPath}  →  {change.Path}")}");
+        if (result.ImportedFromSpool > 0)
+            Console.WriteLine($"{DateTime.Now:HH:mm:ss}    {result.ImportedFromSpool} Zwischenstände übernommen");
+        foreach (var error in result.Errors)
+            Console.WriteLine($"{DateTime.Now:HH:mm:ss}    FEHLER {error.Path}: {error.Message}");
+    };
+    Console.WriteLine("Automatik-Modus läuft. Beenden mit Strg+C.");
+    service.Start();
+    try
+    {
+        await Task.Delay(Timeout.Infinite, cancel.Token);
+    }
+    catch (OperationCanceledException)
+    {
+    }
+    await service.StopAsync();
+    return 0;
+}
+
 static void PrintHelp()
 {
     Console.WriteLine("""
@@ -304,6 +337,7 @@ static void PrintHelp()
           fileman backup                                 Änderungen seit der letzten Sicherung sichern
           fileman status                                 Zustand von Quellordnern, Platte und Archiv
           fileman verify                                 alle gesicherten Inhalte auf Beschädigung prüfen
+          fileman watch                                  Automatik-Modus im Vordergrund (wie die Tray-Anwendung)
 
         Suchen und wiederherstellen:
           fileman find <begriffe> [--under <ordner>] [--deleted]
