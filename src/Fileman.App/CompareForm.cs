@@ -18,7 +18,7 @@ internal sealed class CompareForm : Form
         _rows = rows;
         Text = $"Vergleich – {Path.GetFileName(newer.Path)}";
         Size = new Size(1000, 560);
-        StartPosition = FormStartPosition.CenterParent;
+        StartPosition = FormStartPosition.CenterScreen;
         ShowInTaskbar = false;
 
         _list = Ui.DetailsList(("Eigenschaft", 190), ($"Stand {DisplayText.Time(older.LastWriteUtc)}", 380), ($"Stand {DisplayText.Time(newer.LastWriteUtc)}", 380));

@@ -627,7 +627,11 @@ public sealed class BackupService : IAsyncDisposable
     private static string Summary(BackupResult result) =>
         result.TotalChanges == 0 && result.ImportedFromSpool == 0
             ? "Alles gesichert."
-            : $"{result.TotalChanges + result.ImportedFromSpool} Änderungen gesichert.";
+            : (result.TotalChanges + result.ImportedFromSpool) switch
+            {
+                1 => "1 Änderung gesichert.",
+                var n => $"{n} Änderungen gesichert.",
+            };
 
     private static void Log(BackupResult result)
     {

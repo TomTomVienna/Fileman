@@ -1,0 +1,77 @@
+FILEMAN – KURZANLEITUNG
+=======================
+
+Fileman sichert Ihre Dateien automatisch auf eine USB-Sicherungsplatte und hebt
+jede Version auf. Gelöschte oder überschriebene Dateien lassen sich jederzeit
+wiederherstellen.
+
+
+1. EINRICHTEN (einmalig)
+------------------------
+Beim ersten Start öffnet sich das Fenster "Einstellungen":
+
+  - "Ordner hinzufügen ..."  – die Ordner wählen, die gesichert werden sollen
+                               (z. B. Ihren Mandantenordner). Mehrere sind möglich.
+  - "Sicherungsplatte festlegen ..." – die USB-Sicherungsplatte wählen (z. B. E:).
+                               Fileman legt dort den Ordner "FilemanArchiv" an.
+  - "OK" klicken.
+
+Die Sicherungsplatte sollte mit NTFS formatiert sein (Standard bei Windows).
+
+
+2. IM ALLTAG
+------------
+Fileman läuft unten rechts im Infobereich der Taskleiste (grünes "F").
+Sie müssen nichts tun: Jede geänderte Datei wird nach wenigen Sekunden gesichert.
+
+Farbe des Symbols:
+  grün    – alles gesichert
+  blau    – Sicherung läuft
+  gelb    – Sicherungsplatte nicht angesteckt. Änderungen werden auf dem PC
+            zwischengespeichert und beim nächsten Anstecken übertragen.
+  rot     – Fehler (Einzelheiten: Rechtsklick > "Protokoll öffnen")
+  violett – ungewöhnlich viele Änderungen, Sicherung angehalten (siehe unten)
+  grau    – pausiert oder noch nicht eingerichtet
+
+Linksklick auf das Symbol zeigt die letzten Änderungen.
+Rechtsklick öffnet das Menü ("Jetzt sichern", "Archiv durchsuchen", "Einstellungen" ...).
+
+
+3. EINE ÄLTERE VERSION ZURÜCKHOLEN
+----------------------------------
+Rechtsklick auf das Symbol > "Archiv durchsuchen ...":
+
+  - Dateinamen oder Ordner eingeben, Enter drücken.
+    Gefunden werden auch umbenannte oder verschobene Dateien über ihren alten Namen.
+  - Datei anklicken, unten die gewünschte Version wählen.
+  - "Ansehen" öffnet sie schreibgeschützt.
+  - "Wiederherstellen ..." legt sie in einem Ordner Ihrer Wahl ab.
+    Vorhandene Dateien werden dabei nie überschrieben.
+  - Zwei Versionen markieren und "Vergleichen" zeigt die Unterschiede
+    (Datum, Größe, Autor, zuletzt gespeichert von ...).
+
+
+4. WENN FILEMAN "UNGEWÖHNLICH VIELE ÄNDERUNGEN" MELDET
+------------------------------------------------------
+Fileman hält die Sicherung an, wenn plötzlich sehr viele Dateien geändert oder
+gelöscht werden. Das kann auf einen Verschlüsselungstrojaner hindeuten.
+
+  - Haben Sie die Änderungen selbst gemacht (z. B. aufgeräumt)?
+    > "Das war ich – Änderungen sichern" klicken.
+  - Wenn NICHT: Sicherungsplatte sofort abziehen, nicht weiterarbeiten und
+    Ihre IT-Betreuung verständigen. Ihre bisherigen Sicherungen sind unverändert.
+
+
+5. IM NOTFALL OHNE FILEMAN
+--------------------------
+Alle Dateien liegen auf der Sicherungsplatte lesbar im Ordner
+"FilemanArchiv\Dateien" – mit dem Explorer zu öffnen. Je Datei gibt es den
+letzten Stand unter dem richtigen Namen und jede Version als
+"Name (Datum Uhrzeit).ext". Näheres steht in "FilemanArchiv\LIESMICH.txt".
+
+
+6. WICHTIG
+----------
+  - Die Sicherungsplatte ersetzt keine zweite Sicherung außer Haus.
+  - Lassen Sie die Platte nicht dauerhaft angesteckt, wenn es sich vermeiden lässt.
+    Fileman holt alles nach, sobald sie wieder angesteckt wird.

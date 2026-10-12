@@ -12,9 +12,10 @@ Versionssicherung für lokal verwaltete Dateien auf eine USB-SSD. Fileman ist f�
 | Projekt | Inhalt |
 |---|---|
 | `src/Fileman.Core` | Gesamte Logik als Bibliothek, ohne Oberfläche. Einzige Abhängigkeit: `Microsoft.Data.Sqlite`. |
-| `src/Fileman.Cli` | Kommandozeile `fileman`, eine dünne Schicht über dem Kern. Gedacht für Support, Skripte und Aufgabenplanung. |
+| `src/Fileman.Cli` | Kommandozeile `fileman-cli.exe`, eine dünne Schicht über dem Kern. Gedacht für Support, Skripte und Aufgabenplanung. |
 | `src/Fileman.App` | WinForms-Tray-Anwendung (`Fileman.exe`) über demselben Kern. |
 | `tests/Fileman.Tests` | xUnit-Tests der Kernlogik. Laufen unter Windows und Linux. |
+| `installer/` | Inno-Setup-Skript, Build-Projekt für das Setup und Kurzanleitung für Anwender. |
 
 Wichtigster Einstiegspunkt für Oberflächen ist `FilemanWorkspace`. Er übernimmt:
 - Einstellungen laden
@@ -133,7 +134,7 @@ Ein Verschlüsselungstrojaner kann ältere Versionen im Archiv nicht zerstören,
 - Das Tray-Symbol wird **violett**, und ein Warnfenster mit betroffenen Ordnern und Beispielen erscheint.
 - Der Alarm übersteht Neustarts (Datei `massenaenderung.json`).
 - Mit **„Das war ich – Änderungen sichern“** wird einmal ohne Prüfung vollständig gesichert, danach greift der Schutz wieder.
-- In der CLI entspricht das `fileman backup --force` (Rückgabewert 5 = angehalten).
+- In der CLI entspricht das `fileman-cli backup --force` (Rückgabewert 5 = angehalten).
 - Alle Werte stehen unter `MassChange` in `settings.json`.
 
 ### Sicherheitsregeln im Kern
@@ -149,34 +150,70 @@ Ein Verschlüsselungstrojaner kann ältere Versionen im Archiv nicht zerstören,
 ## Kommandozeile
 
 ```
-fileman init-target E:\                          Sicherungsziel einrichten (legt E:\FilemanArchiv an)
-fileman roots add D:\Mandanten --name Mandanten  Quellordner hinzufügen (beliebig viele)
-fileman roots add C:\Users\me\Documents
-fileman backup [--force]                         Änderungen sichern (--force: auch bei Massenänderung)
-fileman status                                   Zustand anzeigen
-fileman find bilanz huber                        Suche, auch in früheren Pfaden und Namen
-fileman show 42                                  Pfadverlauf und Versionen von Dokument 42
-fileman changes --count 30                       letzte Änderungen
-fileman restore 117 --to C:\Temp                 Version 117 wiederherstellen
-fileman verify                                   alle Inhalte auf Beschädigung prüfen
-fileman watch                                    Automatik-Modus im Konsolenfenster (Test/Support)
+fileman-cli init-target E:\                          Sicherungsziel einrichten (legt E:\FilemanArchiv an)
+fileman-cli roots add D:\Mandanten --name Mandanten  Quellordner hinzufügen (beliebig viele)
+fileman-cli roots add C:\Users\me\Documents
+fileman-cli backup [--force]                         Änderungen sichern (--force: auch bei Massenänderung)
+fileman-cli status                                   Zustand anzeigen
+fileman-cli find bilanz huber                        Suche, auch in früheren Pfaden und Namen
+fileman-cli show 42                                  Pfadverlauf und Versionen von Dokument 42
+fileman-cli changes --count 30                       letzte Änderungen
+fileman-cli restore 117 --to C:\Temp                 Version 117 wiederherstellen
+fileman-cli verify                                   alle Inhalte auf Beschädigung prüfen
+fileman-cli watch                                    Automatik-Modus im Konsolenfenster (Test/Support)
 ```
 
 ## Bauen und Testen
 
-Voraussetzung: .NET 10 SDK (LTS, Support bis November 2028).
+Voraussetzung: .NET 10 SDK.
 
 ```
 dotnet build
 dotnet test
-dotnet publish src/Fileman.App -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
-dotnet publish src/Fileman.Cli -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 ```
 
-Die Tray-Anwendung lässt sich dank `EnableWindowsTargeting` auch unter Linux bauen. Ausführen lässt sie sich nur unter Windows.
+### Installationspaket
+
+```
+dotnet build installer/Fileman.Installer.proj -c Release
+```
+
+Ergebnis ist `artifacts/installer/Fileman-Setup-<Version>.exe` (ca. 38 MB). Die Version stammt aus `Directory.Build.props`.
+
+**So entsteht das Setup:**
+- Das Projekt veröffentlicht `Fileman.exe` (Tray) und `fileman-cli.exe` eigenständig für win-x64 in einen gemeinsamen Ordner. Die .NET-Laufzeit ist enthalten, auf dem Zielrechner muss nichts installiert sein.
+- Danach kompiliert es `installer/Fileman.iss` mit **Inno Setup**. Der Compiler kommt automatisch aus dem NuGet-Paket `Tools.InnoSetup`.
+- Unter Linux/macOS wird der Compiler über Wine ausgeführt. Dafür ist Wine mit 32-Bit-Unterstützung nötig (Paket `wine32`).
+
+**Das Setup:**
+- installiert **pro Benutzer** ohne Administratorrechte nach `%LOCALAPPDATA%\Programs\Fileman`
+- legt Startmenü-Einträge an (Fileman und Kurzanleitung)
+- trägt optional den Autostart ein (vorausgewählt) und legt optional ein Desktop-Symbol an
+- startet Fileman auf Wunsch direkt nach der Installation
+
+**Updates:** Einfach das neue Setup ausführen. Ein laufendes Fileman wird vorher mit `Fileman.exe --exit` beendet. Einstellungen und Archiv bleiben erhalten.
+
+**Deinstallation:**
+- Sie entfernt das Programm und den Autostart-Eintrag.
+- Danach fragt sie, ob auch Einstellungen und Zwischenspeicher gelöscht werden sollen. Vorbelegt ist „Nein“.
+- Das Archiv auf der Sicherungsplatte wird nie angetastet.
+
+**Stille Installation**, z. B. für die IT-Betreuung:
+
+```
+Fileman-Setup-0.9.0.exe /VERYSILENT /SUPPRESSMSGBOXES /TASKS="autostart"
+```
+
+**Kein Code-Signing:** Das Setup ist nicht signiert, Windows SmartScreen warnt deshalb beim ersten Start („Weitere Informationen“ → „Trotzdem ausführen“). Für eine Verteilung an mehrere Kanzleien empfiehlt sich ein Code-Signing-Zertifikat.
+
+### Automatischer Bau (GitHub Actions)
+
+`.github/workflows/build.yml`:
+- führt die Tests unter Linux **und** Windows aus
+- baut bei jedem Push das Setup (als Artefakt herunterladbar)
+- hängt es bei einem Tag `v<Version>` (z. B. `v0.9.0`) an ein GitHub-Release an
 
 ## Nächste Schritte
 
 - Erste Tests der Tray-Anwendung unter Windows (Layout, Benachrichtigungen, NTFS-Datei-ID).
 - Optionale Verschlüsselung des Archivs.
-- Installations- bzw. Verteilpaket.

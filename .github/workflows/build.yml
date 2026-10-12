@@ -1,0 +1,50 @@
+name: Build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet build -c Release
+      - run: dotnet test -c Release --no-build
+
+  installer:
+    name: Setup
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Version aus Tag übernehmen (v1.2.3 → 1.2.3)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: echo "VERSION_ARG=-p:Version=$('${{ github.ref_name }}'.Substring(1))" >> $env:GITHUB_ENV
+      - name: Setup bauen
+        run: dotnet build installer/Fileman.Installer.proj -c Release ${{ env.VERSION_ARG }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fileman-Setup
+          path: artifacts/installer/*.exe
+          if-no-files-found: error
+      - name: Release anlegen
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/installer/*.exe

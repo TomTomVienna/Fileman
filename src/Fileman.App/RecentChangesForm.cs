@@ -108,7 +108,7 @@ internal sealed class RecentChangesForm : Form
             var item = new ListViewItem(DisplayText.Time(e.Utc)) { Tag = e.DocumentId, ForeColor = KindColor(e.Kind) };
             item.SubItems.Add(DisplayText.Kind(e.Kind));
             item.SubItems.Add(Path.GetFileName(e.Path));
-            item.SubItems.Add(e.OldPath is null ? Path.GetDirectoryName(e.Path) : $"{e.OldPath}  →  {e.Path}");
+            item.SubItems.Add(FolderText(e));
             item.ToolTipText = e.OldPath is null ? e.Path : $"vorher: {e.OldPath}\njetzt: {e.Path}";
             _list.Items.Add(item);
         }
@@ -116,6 +116,18 @@ internal sealed class RecentChangesForm : Form
         _list.EndUpdate();
         _source.Text = data.Error
             ?? (data.IsCache ? "Anzeige aus der lokalen Kopie – die Sicherungsplatte ist nicht angesteckt." : "Doppelklick öffnet die Versionen eines Eintrags.");
+    }
+
+    /// <summary>Ordner; bei Umbenennungen der frühere Name, bei Verschiebungen der frühere Ordner.</summary>
+    private static string FolderText(ChangeEvent e)
+    {
+        var folder = Path.GetDirectoryName(e.Path) ?? "";
+        if (e.OldPath is null)
+            return folder;
+        var oldFolder = Path.GetDirectoryName(e.OldPath) ?? "";
+        return string.Equals(oldFolder, folder, StringComparison.OrdinalIgnoreCase)
+            ? $"{folder}   (vorher: {Path.GetFileName(e.OldPath)})"
+            : $"{folder}   (vorher in: {oldFolder})";
     }
 
     private static Color KindColor(ChangeKind kind) => kind switch

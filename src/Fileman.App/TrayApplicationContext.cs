@@ -25,6 +25,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private ArchiveBrowserForm? _browser;
     private bool _settingsOpen;
     private ServiceStatus? _lastStatus;
+    private readonly EventWaitHandle _exitRequest;
+    private readonly RegisteredWaitHandle _exitRegistration;
 
     public TrayApplicationContext()
     {
@@ -73,6 +75,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 ToggleRecent();
         };
         _tray.BalloonTipClicked += (_, _) => ShowRecent();
+
+        // Das Setup kann eine laufende Instanz über dieses Ereignis beenden ("Fileman.exe --exit").
+        _exitRequest = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ExitEventName);
+        _exitRegistration = ThreadPool.RegisterWaitForSingleObject(_exitRequest, (_, _) => Post(Exit), null, Timeout.Infinite, executeOnlyOnce: true);
 
         _service = new BackupService(_workspace);
         _service.StateChanged += (_, state) => Post(() => OnStateChanged(state));
@@ -145,7 +151,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         else if (result.Trigger == BackupTrigger.Manual)
         {
             Notify(ToolTipIcon.Info, "Sicherung abgeschlossen",
-                result.TotalChanges == 0 ? "Es gab keine Änderungen – alles war bereits gesichert." : $"{result.TotalChanges} Änderungen gesichert.");
+                result.TotalChanges switch
+                {
+                    0 => "Es gab keine Änderungen – alles war bereits gesichert.",
+                    1 => "1 Änderung gesichert.",
+                    var n => $"{n} Änderungen gesichert.",
+                });
         }
         if (_recent is { Visible: true })
             _ = _recent.RefreshAsync();
@@ -291,6 +302,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (disposing)
         {
+            _exitRegistration.Unregister(null);
+            _exitRequest.Dispose();
             _tray.Dispose();
             _recent?.Dispose();
             _browser?.Dispose();

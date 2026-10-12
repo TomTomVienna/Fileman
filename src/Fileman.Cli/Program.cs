@@ -44,7 +44,7 @@ try
         "restore" => Restore(rest),
         "verify" => Verify(),
         "watch" => await WatchAsync(),
-        _ => throw new UsageException($"Unbekannter Befehl \"{command}\". Hilfe: fileman --help"),
+        _ => throw new UsageException($"Unbekannter Befehl \"{command}\". Hilfe: fileman-cli --help"),
     };
 }
 catch (UsageException ex)
@@ -85,7 +85,7 @@ int Roots(Arguments a)
     {
         case "list":
             if (workspace.Settings.Roots.Count == 0)
-                Console.WriteLine("Keine Quellordner eingerichtet. Hinzufügen: fileman roots add <ordner> [--name <anzeigename>]");
+                Console.WriteLine("Keine Quellordner eingerichtet. Hinzufügen: fileman-cli roots add <ordner> [--name <anzeigename>]");
             foreach (var root in workspace.Settings.Roots)
             {
                 var state = Directory.Exists(root.Path) ? "" : "   (nicht erreichbar)";
@@ -104,7 +104,7 @@ int Roots(Arguments a)
             Console.WriteLine("Quellordner entfernt. Bereits gesicherte Stände bleiben im Archiv.");
             return 0;
         default:
-            throw new UsageException("Verwendung: fileman roots [list | add <ordner> [--name <name>] | remove <ordner|name>]");
+            throw new UsageException("Verwendung: fileman-cli roots [list | add <ordner> [--name <name>] | remove <ordner|name>]");
     }
 }
 
@@ -137,7 +137,7 @@ async Task<int> BackupAsync(Arguments a)
         if (!Console.IsOutputRedirected)
             Console.Write("\r" + new string(' ', lastLine) + "\r");
         PrintMassChange(ex.Report);
-        Console.WriteLine("Wenn Sie diese Änderungen selbst vorgenommen haben: fileman backup --force");
+        Console.WriteLine("Wenn Sie diese Änderungen selbst vorgenommen haben: fileman-cli backup --force");
         return 5;
     }
     if (!Console.IsOutputRedirected)
@@ -171,7 +171,7 @@ int Status()
 
     if (settings.Target is null)
     {
-        Console.WriteLine("Sicherungsziel: noch nicht eingerichtet (fileman init-target <ordner>)");
+        Console.WriteLine("Sicherungsziel: noch nicht eingerichtet (fileman-cli init-target <ordner>)");
         return 1;
     }
     var located = workspace.LocateArchive();
@@ -231,13 +231,13 @@ int Find(Arguments a)
     }
     if (hits.Count == 200)
         Console.WriteLine("… weitere Treffer; bitte Suche verfeinern.");
-    Console.WriteLine("Details und Versionen: fileman show <Nr>");
+    Console.WriteLine("Details und Versionen: fileman-cli show <Nr>");
     return 0;
 }
 
 int Show(Arguments a)
 {
-    var id = a.RequireId(0, "die Dokument-Nummer aus \"fileman find\"");
+    var id = a.RequireId(0, "die Dokument-Nummer aus \"fileman-cli find\"");
     using var view = workspace.OpenCatalogForReading();
     var doc = view.Catalog.GetDocument(id) ?? throw new FilemanException($"Dokument {id} gibt es nicht.");
     Console.WriteLine($"Dokument {doc.Id}: {doc.FileName}");
@@ -257,7 +257,7 @@ int Show(Arguments a)
     Console.WriteLine($"    {"Nr",6}  {"Dateistand",-16}  {"gesichert",-16}  {"Größe",10}  {"Art",-11}  Prüfsumme");
     foreach (var v in view.Catalog.GetVersions(id))
         Console.WriteLine($"    {v.Id,6}  {DisplayText.Time(v.LastWriteUtc),-16}  {DisplayText.Time(v.CapturedUtc),-16}  {DisplayText.Size(v.Size),10}  {DisplayText.Trigger(v.Trigger),-11}  {v.Hash[..12]}");
-    Console.WriteLine("Wiederherstellen: fileman restore <Versions-Nr> [--to <ordner>]");
+    Console.WriteLine("Wiederherstellen: fileman-cli restore <Versions-Nr> [--to <ordner>]");
     return 0;
 }
 
@@ -275,7 +275,7 @@ int Changes(Arguments a)
 
 int Restore(Arguments a)
 {
-    var versionId = a.RequireId(0, "die Versions-Nummer aus \"fileman show\"");
+    var versionId = a.RequireId(0, "die Versions-Nummer aus \"fileman-cli show\"");
     using var archive = workspace.OpenArchive(readOnly: true);
     var target = new RestoreService(archive).Restore(versionId, a.Option("to"), cancel.Token);
     Console.WriteLine($"Wiederhergestellt: {target}");
@@ -366,24 +366,24 @@ static void PrintHelp()
         Fileman – Versionssicherung auf eine USB-Platte
 
         Einrichtung:
-          fileman init-target <ordner> [--name <name>]   Sicherungsziel einrichten (z. B. E:\)
-          fileman roots list                             Quellordner anzeigen
-          fileman roots add <ordner> [--name <name>]     Quellordner hinzufügen
-          fileman roots remove <ordner|name>             Quellordner entfernen
+          fileman-cli init-target <ordner> [--name <name>]   Sicherungsziel einrichten (z. B. E:\)
+          fileman-cli roots list                             Quellordner anzeigen
+          fileman-cli roots add <ordner> [--name <name>]     Quellordner hinzufügen
+          fileman-cli roots remove <ordner|name>             Quellordner entfernen
 
         Sichern und prüfen:
-          fileman backup [--force]                       Änderungen seit der letzten Sicherung sichern
-                                                         (--force: auch bei ungewöhnlich vielen Änderungen)
-          fileman status                                 Zustand von Quellordnern, Platte und Archiv
-          fileman verify                                 alle gesicherten Inhalte auf Beschädigung prüfen
-          fileman watch                                  Automatik-Modus im Vordergrund (wie die Tray-Anwendung)
+          fileman-cli backup [--force]                       Änderungen seit der letzten Sicherung sichern
+                                                             (--force: auch bei ungewöhnlich vielen Änderungen)
+          fileman-cli status                                 Zustand von Quellordnern, Platte und Archiv
+          fileman-cli verify                                 alle gesicherten Inhalte auf Beschädigung prüfen
+          fileman-cli watch                                  Automatik-Modus im Vordergrund (wie die Tray-Anwendung)
 
         Suchen und wiederherstellen:
-          fileman find <begriffe> [--under <ordner>] [--deleted]
-                                                         sucht auch in früheren Pfaden und Namen
-          fileman show <dokument-nr>                     Pfadverlauf und Versionen eines Dokuments
-          fileman changes [--count <n>]                  letzte Änderungen
-          fileman restore <versions-nr> [--to <ordner>]  Version wiederherstellen (überschreibt nie)
+          fileman-cli find <begriffe> [--under <ordner>] [--deleted]
+                                                             sucht auch in früheren Pfaden und Namen
+          fileman-cli show <dokument-nr>                     Pfadverlauf und Versionen eines Dokuments
+          fileman-cli changes [--count <n>]                  letzte Änderungen
+          fileman-cli restore <versions-nr> [--to <ordner>]  Version wiederherstellen (überschreibt nie)
 
         Allgemein:
           --home <ordner>   anderer Ordner für Einstellungen (Standard: %LOCALAPPDATA%\Fileman)

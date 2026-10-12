@@ -1,0 +1,55 @@
+<!--
+  Baut das Windows-Setup:   dotnet build installer/Fileman.Installer.proj -c Release
+  Ergebnis:                 artifacts/installer/Fileman-Setup-<Version>.exe
+
+  1. Veröffentlicht Fileman.exe (Tray) und fileman-cli.exe eigenständig für win-x64 in einen gemeinsamen Ordner
+     (mit einer gemeinsamen .NET-Laufzeit – auf dem Zielrechner muss nichts weiter installiert sein).
+  2. Kompiliert Fileman.iss mit Inno Setup. Der Compiler kommt aus dem NuGet-Paket Tools.InnoSetup;
+     unter Linux/macOS wird er über Wine ausgeführt.
+  Die Version stammt aus Directory.Build.props (<Version>).
+
+  Bewusst nicht in Fileman.sln, damit ein normales "dotnet build" schnell bleibt.
+-->
+<Project Sdk="Microsoft.Build.NoTargets/3.7.134">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..'))</RepoRoot>
+    <PublishRoot>$(RepoRoot)/artifacts/publish</PublishRoot>
+    <InstallerOutput>$(RepoRoot)/artifacts/installer</InstallerOutput>
+    <InnoSetupVersion>6.7.3</InnoSetupVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Tools.InnoSetup" Version="$(InnoSetupVersion)" GeneratePathProperty="true" ExcludeAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PublishProject Include="$(RepoRoot)/src/Fileman.App/Fileman.App.csproj" />
+    <PublishProject Include="$(RepoRoot)/src/Fileman.Cli/Fileman.Cli.csproj" />
+  </ItemGroup>
+
+  <Target Name="BuildInstaller" AfterTargets="Build">
+    <RemoveDir Directories="$(PublishRoot)" />
+    <MSBuild Projects="@(PublishProject)"
+             Targets="Restore;Publish"
+             Properties="Configuration=Release;RuntimeIdentifier=win-x64;SelfContained=true;DebugType=none;SatelliteResourceLanguages=de;PublishDir=$(PublishRoot)/;MSBuildRestoreSessionId=$([System.Guid]::NewGuid())" />
+
+    <PropertyGroup>
+      <IsccPath>$(PkgTools_InnoSetup)/tools/ISCC.exe</IsccPath>
+      <IsccCommand Condition="$([MSBuild]::IsOSPlatform('Windows'))">"$(IsccPath)"</IsccCommand>
+      <IsccCommand Condition="!$([MSBuild]::IsOSPlatform('Windows'))">wine "$(IsccPath)"</IsccCommand>
+      <!-- Inno Setup erwartet Windows-Pfade; unter Wine wird "/" über Laufwerk Z: abgebildet. -->
+      <IssPublish Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(PublishRoot)</IssPublish>
+      <IssPublish Condition="!$([MSBuild]::IsOSPlatform('Windows'))">Z:$([System.String]::Copy('$(PublishRoot)').Replace('/', '\'))</IssPublish>
+      <IssOutput Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(InstallerOutput)</IssOutput>
+      <IssOutput Condition="!$([MSBuild]::IsOSPlatform('Windows'))">Z:$([System.String]::Copy('$(InstallerOutput)').Replace('/', '\'))</IssOutput>
+    </PropertyGroup>
+
+    <Error Condition="!Exists('$(IsccPath)')" Text="Inno Setup Compiler nicht gefunden: $(IsccPath)" />
+    <Exec Command="$(IsccCommand) /Q &quot;/DAppVersion=$(Version)&quot; &quot;/DPublishDir=$(IssPublish)&quot; &quot;/DOutputDir=$(IssOutput)&quot; Fileman.iss"
+          WorkingDirectory="$(MSBuildThisFileDirectory)" />
+    <Message Importance="high" Text="Setup erstellt: $(InstallerOutput)/Fileman-Setup-$(Version).exe" />
+  </Target>
+
+</Project>
