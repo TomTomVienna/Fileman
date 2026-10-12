@@ -31,6 +31,9 @@ public sealed class FilemanSettings
     /// <summary>Abstand der vollständigen Abgleichsläufe im Automatik-Modus.</summary>
     public int ReconcileMinutes { get; set; } = 60;
 
+    /// <summary>Höchstgröße des lokalen Zwischenspeichers, solange die Sicherungsplatte fehlt.</summary>
+    public int SpoolMaxMegabytes { get; set; } = 2048;
+
     /// <summary>Gleichzeitig durchsuchte Ordner (0 = automatisch nach Prozessorkernen).</summary>
     public int ScanThreads { get; set; }
 

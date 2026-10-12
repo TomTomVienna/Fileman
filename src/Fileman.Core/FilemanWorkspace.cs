@@ -1,4 +1,5 @@
 using Fileman.Core.Archive;
+using Fileman.Core.Automation;
 using Fileman.Core.Backup;
 using Fileman.Core.Catalog;
 using Fileman.Core.Configuration;
@@ -25,6 +26,23 @@ public sealed class FilemanWorkspace
         _time = time ?? TimeProvider.System;
         _driveRoots = driveRoots;
         Settings = SettingsStore.Load(paths.SettingsFile);
+        Spool = new Spool(paths.SpoolDirectory);
+    }
+
+    /// <summary>Lokaler Zwischenspeicher für Zeiten ohne Sicherungsplatte.</summary>
+    public Spool Spool { get; }
+
+    public TimeProvider Time => _time;
+
+    public ExclusionFilter CreateExclusionFilter() => new(Settings.ExcludePatterns);
+
+    /// <summary>Wird nur ein Laufwerk angegeben (z. B. "E:\"), kommt das Archiv in den Unterordner "FilemanArchiv".</summary>
+    public static string ResolveTargetDirectory(string directory)
+    {
+        var full = Path.GetFullPath(directory);
+        return string.Equals(PathUtil.Normalize(full), PathUtil.Normalize(Path.GetPathRoot(full)!), StringComparison.OrdinalIgnoreCase)
+            ? Path.Combine(full, BackupArchive.DefaultFolderName)
+            : full;
     }
 
     public AppPaths Paths { get; }
@@ -69,14 +87,17 @@ public sealed class FilemanWorkspace
         return BackupArchive.Open(directory, readOnly);
     }
 
-    /// <summary>Führt eine Sicherung aus und aktualisiert danach die lokale Katalog-Kopie.</summary>
+    /// <summary>
+    /// Führt eine Sicherung aus und aktualisiert danach die lokale Katalog-Kopie. Bei einem vollständigen Lauf
+    /// (ohne <paramref name="scopes"/>) werden anschließend auch die Zwischenstände aus dem Zwischenspeicher übernommen.
+    /// </summary>
     public async Task<BackupResult> RunBackupAsync(BackupTrigger trigger, IReadOnlyList<ScanScope>? scopes = null,
         IProgress<BackupProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         if (Settings.Roots.Count == 0)
             throw new FilemanException("Es sind noch keine Quellordner eingerichtet.");
         using var archive = OpenArchive();
-        var engine = new BackupEngine(archive, _identity, new ExclusionFilter(Settings.ExcludePatterns), _time);
+        var engine = new BackupEngine(archive, _identity, CreateExclusionFilter(), _time);
         var result = await engine.RunAsync(new BackupOptions
         {
             Roots = Settings.Roots.Select(r => r.Path).ToList(),
@@ -85,6 +106,8 @@ public sealed class FilemanWorkspace
             ScanParallelism = Settings.ScanThreads,
             FileParallelism = Settings.FileThreads,
         }, progress, cancellationToken).ConfigureAwait(false);
+        if (scopes is null)
+            result.ImportedFromSpool = Spool.ImportInto(archive, _time.GetUtcNow().UtcDateTime);
         RefreshCatalogCache(archive);
         return result;
     }

@@ -99,6 +99,7 @@ public sealed class BackupEngine
             _result.StartedUtc = _now;
             _runId = Catalog.StartRun(options.Trigger, _now);
             _result.RunId = _runId;
+            _result.Trigger = options.Trigger;
 
             var completed = false;
             try

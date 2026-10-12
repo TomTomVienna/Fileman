@@ -17,6 +17,11 @@ public sealed class AppPaths
     /// <summary>Lokale Kopie des Katalogs, damit man auch ohne angesteckte Platte suchen kann.</summary>
     public string CatalogCacheFile => Path.Combine(Home, "catalog-cache.db");
 
+    /// <summary>Zwischenspeicher für Änderungen, solange die Sicherungsplatte nicht angesteckt ist.</summary>
+    public string SpoolDirectory => Path.Combine(Home, "spool");
+
+    public string LogFile => Path.Combine(Home, "fileman.log");
+
     public string ViewDirectory => Path.Combine(Path.GetTempPath(), "Fileman", "Ansicht");
 
     /// <summary>Standard: %LOCALAPPDATA%\Fileman, überschreibbar mit der Umgebungsvariable FILEMAN_HOME.</summary>

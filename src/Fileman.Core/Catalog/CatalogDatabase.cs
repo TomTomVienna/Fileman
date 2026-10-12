@@ -269,7 +269,7 @@ public sealed class CatalogDatabase : IDisposable
     }
 
     public List<VersionRecord> GetVersions(long documentId) =>
-        Query("SELECT Id, DocumentId, Hash, Size, LastWriteUtc, Path, CapturedUtc, Trigger FROM Versions WHERE DocumentId = $d ORDER BY Id DESC",
+        Query("SELECT Id, DocumentId, Hash, Size, LastWriteUtc, Path, CapturedUtc, Trigger FROM Versions WHERE DocumentId = $d ORDER BY CapturedUtc DESC, Id DESC",
             [("$d", documentId)], ReadVersion);
 
     public VersionRecord? GetVersion(long versionId) =>
@@ -285,6 +285,21 @@ public sealed class CatalogDatabase : IDisposable
                 NewPath = r.GetString(2),
                 ChangedUtc = FromDb(r.GetString(3)),
             });
+
+    /// <summary>
+    /// Sucht das Dokument, das zuletzt unter <paramref name="path"/> lag: zuerst vorhandene, dann frühere Pfade, dann gelöschte.
+    /// </summary>
+    public DocumentRecord? FindDocumentByAnyPath(string path)
+    {
+        var key = PathUtil.Key(path);
+        return Query($"SELECT {DocumentColumns} FROM Documents d WHERE d.PathKey = $k AND d.IsDeleted = 0 LIMIT 1", [("$k", key)], ReadDocument).FirstOrDefault()
+            ?? Query($"SELECT {DocumentColumns} FROM Documents d JOIN PathHistory h ON h.DocumentId = d.Id WHERE h.OldPath = $p ORDER BY h.Id DESC LIMIT 1",
+                [("$p", path)], ReadDocument).FirstOrDefault()
+            ?? Query($"SELECT {DocumentColumns} FROM Documents d WHERE d.PathKey = $k ORDER BY d.DeletedUtc DESC LIMIT 1", [("$k", key)], ReadDocument).FirstOrDefault();
+    }
+
+    public bool HasVersionWithHash(long documentId, string hash) =>
+        Convert.ToInt64(ScalarWith("SELECT COUNT(*) FROM Versions WHERE DocumentId = $d AND Hash = $h", [("$d", documentId), ("$h", hash)])) > 0;
 
     public List<ChangeEvent> GetRecentEvents(int count) =>
         Query("SELECT Id, Utc, DocumentId, Kind, Path, OldPath FROM Events ORDER BY Id DESC LIMIT $n", [("$n", count)], ReadEvent);
@@ -410,9 +425,11 @@ public sealed class CatalogDatabase : IDisposable
         command.ExecuteNonQuery();
     }
 
-    private object? Scalar(string sql)
+    private object? Scalar(string sql) => ScalarWith(sql, []);
+
+    private object? ScalarWith(string sql, IEnumerable<(string, object?)> parameters)
     {
-        using var command = CreateCommand(sql, []);
+        using var command = CreateCommand(sql, parameters);
         return command.ExecuteScalar();
     }
 

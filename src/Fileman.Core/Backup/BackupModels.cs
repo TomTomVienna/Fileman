@@ -60,6 +60,10 @@ public sealed class BackupResult
     /// <summary>Ordner, die nicht gelesen werden konnten. Ihre Dateien werden ebenfalls NICHT als gelöscht markiert.</summary>
     public List<BackupError> UnreadableDirectories { get; } = [];
     public List<ChangeEvent> Changes { get; } = [];
+    /// <summary>Zwischenstände, die aus dem lokalen Zwischenspeicher übernommen wurden.</summary>
+    public int ImportedFromSpool { get; set; }
 
     public int TotalChanges => Created + Modified + Moved + Deleted;
+
+    public BackupTrigger Trigger { get; set; }
 }
