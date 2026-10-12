@@ -6,6 +6,7 @@ using Fileman.Core.Automation;
 using Fileman.Core.Backup;
 using Fileman.Core.Catalog;
 using Fileman.Core.Configuration;
+using Fileman.Core.Protection;
 using Fileman.Core.Restore;
 
 Console.OutputEncoding = Encoding.UTF8;
@@ -35,7 +36,7 @@ try
     {
         "init-target" => InitTarget(rest),
         "roots" => Roots(rest),
-        "backup" => await BackupAsync(),
+        "backup" => await BackupAsync(rest),
         "status" => Status(),
         "find" => Find(rest),
         "show" => Show(rest),
@@ -107,8 +108,9 @@ int Roots(Arguments a)
     }
 }
 
-async Task<int> BackupAsync()
+async Task<int> BackupAsync(Arguments a)
 {
+    var guard = new MassChangeGuard(workspace.Settings.MassChange) { BypassNextRun = a.Flag("force") };
     var lastLine = 0;
     var progress = new Progress<BackupProgress>(p =>
     {
@@ -125,7 +127,19 @@ async Task<int> BackupAsync()
         lastLine = text.Length;
     });
 
-    var result = await workspace.RunBackupAsync(BackupTrigger.Manual, progress: progress, cancellationToken: cancel.Token);
+    BackupResult result;
+    try
+    {
+        result = await workspace.RunBackupAsync(BackupTrigger.Manual, progress: progress, cancellationToken: cancel.Token, guard: guard);
+    }
+    catch (MassChangeException ex)
+    {
+        if (!Console.IsOutputRedirected)
+            Console.Write("\r" + new string(' ', lastLine) + "\r");
+        PrintMassChange(ex.Report);
+        Console.WriteLine("Wenn Sie diese Änderungen selbst vorgenommen haben: fileman backup --force");
+        return 5;
+    }
     if (!Console.IsOutputRedirected)
         Console.Write("\r" + new string(' ', lastLine) + "\r");
 
@@ -149,6 +163,8 @@ int Status()
 {
     var settings = workspace.Settings;
     Console.WriteLine($"Einstellungen:  {workspace.Paths.SettingsFile}");
+    if (File.Exists(workspace.Paths.MassChangeAlarmFile))
+        Console.WriteLine("ACHTUNG:        Automatik wegen ungewöhnlich vieler Änderungen angehalten – bitte in der Tray-Anwendung prüfen.");
     Console.WriteLine($"Quellordner:    {settings.Roots.Count}");
     foreach (var root in settings.Roots)
         Console.WriteLine($"  {(Directory.Exists(root.Path) ? "ok   " : "FEHLT")} {root.DisplayName}{(root.Name is null ? "" : $" ({root.Path})")}");
@@ -309,6 +325,9 @@ async Task<int> WatchAsync()
         foreach (var error in result.Errors)
             Console.WriteLine($"{DateTime.Now:HH:mm:ss}    FEHLER {error.Path}: {error.Message}");
     };
+    service.MassChangeDetected += (_, report) => PrintMassChange(report);
+    if (service.Alarm is { } alarm)
+        PrintMassChange(alarm);
     Console.WriteLine("Automatik-Modus läuft. Beenden mit Strg+C.");
     service.Start();
     try
@@ -320,6 +339,25 @@ async Task<int> WatchAsync()
     }
     await service.StopAsync();
     return 0;
+}
+
+static void PrintMassChange(MassChangeReport report)
+{
+    Console.WriteLine();
+    Console.WriteLine("!!! SICHERUNG ANGEHALTEN – UNGEWÖHNLICH VIELE ÄNDERUNGEN !!!");
+    Console.WriteLine(report.Reason);
+    Console.WriteLine("Das kann auf einen Verschlüsselungstrojaner hindeuten. Bisherige Versionen im Archiv sind unverändert.");
+    if (report.Folders.Count > 0)
+    {
+        Console.WriteLine("Betroffene Ordner:");
+        foreach (var folder in report.Folders)
+            Console.WriteLine("  " + folder);
+    }
+    Console.WriteLine("Beispiele:");
+    foreach (var example in report.Examples)
+        Console.WriteLine("  " + example);
+    Console.WriteLine("Wenn Sie diese Änderungen NICHT selbst vorgenommen haben: Sicherungsplatte sofort abziehen und IT-Betreuung verständigen.");
+    Console.WriteLine();
 }
 
 static void PrintHelp()
@@ -334,7 +372,8 @@ static void PrintHelp()
           fileman roots remove <ordner|name>             Quellordner entfernen
 
         Sichern und prüfen:
-          fileman backup                                 Änderungen seit der letzten Sicherung sichern
+          fileman backup [--force]                       Änderungen seit der letzten Sicherung sichern
+                                                         (--force: auch bei ungewöhnlich vielen Änderungen)
           fileman status                                 Zustand von Quellordnern, Platte und Archiv
           fileman verify                                 alle gesicherten Inhalte auf Beschädigung prüfen
           fileman watch                                  Automatik-Modus im Vordergrund (wie die Tray-Anwendung)
@@ -349,6 +388,7 @@ static void PrintHelp()
         Allgemein:
           --home <ordner>   anderer Ordner für Einstellungen (Standard: %LOCALAPPDATA%\Fileman)
 
-        Rückgabewerte: 0 = ok, 1 = Fehler, 2 = falscher Aufruf, 3 = Sicherung mit Fehlern, 4 = Archiv beschädigt
+        Rückgabewerte: 0 = ok, 1 = Fehler, 2 = falscher Aufruf, 3 = Sicherung mit Fehlern, 4 = Archiv beschädigt,
+                       5 = angehalten wegen ungewöhnlich vieler Änderungen
         """);
 }

@@ -44,6 +44,7 @@ public static class DisplayText
         ServiceStatus.TargetMissing => "Sicherungsplatte nicht angesteckt",
         ServiceStatus.Paused => "Pausiert",
         ServiceStatus.Error => "Fehler",
+        ServiceStatus.MassChange => "Angehalten: ungewöhnlich viele Änderungen",
         _ => status.ToString(),
     };
 

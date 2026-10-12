@@ -1,6 +1,8 @@
 using Fileman.Core.Archive;
 using Fileman.Core.Backup;
+using System.Text.Json;
 using Fileman.Core.Catalog;
+using Fileman.Core.Protection;
 using Fileman.Core.Scanning;
 
 namespace Fileman.Core.Automation;
@@ -19,6 +21,8 @@ public enum ServiceStatus
     Paused,
     /// <summary>Letzter Versuch ist fehlgeschlagen; es wird erneut versucht.</summary>
     Error,
+    /// <summary>Ungewöhnlich viele Änderungen: Automatik angehalten, bis der Anwender bestätigt.</summary>
+    MassChange,
 }
 
 public sealed record ServiceState(
@@ -27,7 +31,8 @@ public sealed record ServiceState(
     int SpooledFiles,
     DateTime? LastBackupUtc,
     string? Message,
-    BackupProgress? Progress);
+    BackupProgress? Progress,
+    MassChangeReport? Alarm = null);
 
 public sealed class BackupServiceOptions
 {
@@ -70,6 +75,8 @@ public sealed class BackupService : IAsyncDisposable
     private bool _reloadRequested;
     private bool? _targetWasAvailable;
     private volatile bool _paused;
+    private readonly MassChangeGuard _guard;
+    private MassChangeReport? _alarm;
     private DateTime? _lastBackupUtc;
     private long _lastProgressTicks;
     private ServiceState _state = new(ServiceStatus.Idle, 0, 0, null, null, null);
@@ -78,6 +85,40 @@ public sealed class BackupService : IAsyncDisposable
     {
         _workspace = workspace;
         _options = options ?? new BackupServiceOptions();
+        _guard = new MassChangeGuard(workspace.Settings.MassChange, workspace.Time);
+        _alarm = LoadAlarm();
+    }
+
+    /// <summary>Ungewöhnlich viele Änderungen erkannt; die Automatik ist angehalten (auf einem Hintergrund-Thread!).</summary>
+    public event EventHandler<MassChangeReport>? MassChangeDetected;
+
+    /// <summary>Der aktuelle Alarm, falls die Automatik wegen einer Massenänderung angehalten ist.</summary>
+    public MassChangeReport? Alarm
+    {
+        get
+        {
+            lock (_sync)
+                return _alarm;
+        }
+    }
+
+    /// <summary>
+    /// Der Anwender bestätigt, dass die Änderungen gewollt sind: einmal ohne Prüfung vollständig sichern, dann normal weiter.
+    /// </summary>
+    public void ConfirmMassChange()
+    {
+        lock (_sync)
+        {
+            if (_alarm is null)
+                return;
+            _alarm = null;
+            _guard.BypassNextRun = true;
+            _needFullRun = true;
+            _retryAfterUtc = DateTime.MinValue;
+        }
+        try { File.Delete(_workspace.Paths.MassChangeAlarmFile); } catch (IOException) { }
+        FilemanLog.Warn("Massenänderung vom Anwender bestätigt – Sicherung wird fortgesetzt.");
+        _wake.Release();
     }
 
     /// <summary>Zustandsänderungen (auf einem Hintergrund-Thread!).</summary>
@@ -229,6 +270,7 @@ public sealed class BackupService : IAsyncDisposable
         {
             _workspace.ReloadSettings();
             settings = _workspace.Settings;
+            _guard.Settings = settings.MassChange;
             _watcher?.Dispose();
             _watcher = null;
         }
@@ -253,10 +295,21 @@ public sealed class BackupService : IAsyncDisposable
         _targetWasAvailable = target is not null;
 
         TaskCompletionSource<BackupResult>[] manual;
+        MassChangeReport? alarm;
         lock (_sync)
         {
             manual = [.. _manualRequests];
             _manualRequests.Clear();
+            alarm = _alarm;
+        }
+
+        if (alarm is not null)
+        {
+            // Nichts sichern und nichts zwischenspeichern, bis der Anwender entschieden hat.
+            foreach (var request in manual)
+                request.TrySetException(new MassChangeException(alarm));
+            SetState(ServiceStatus.MassChange, alarm.Reason);
+            return;
         }
 
         if (manual.Length > 0)
@@ -398,7 +451,7 @@ public sealed class BackupService : IAsyncDisposable
         SetState(ServiceStatus.Running, null);
         try
         {
-            var result = await _workspace.RunBackupAsync(trigger, scopes, progress, run.Token).ConfigureAwait(false);
+            var result = await _workspace.RunBackupAsync(trigger, scopes, progress, run.Token, _guard).ConfigureAwait(false);
             lock (_sync)
             {
                 _lastBackupUtc = result.FinishedUtc;
@@ -413,6 +466,22 @@ public sealed class BackupService : IAsyncDisposable
                 request.TrySetResult(result);
             BackupCompleted?.Invoke(this, result);
             SetState(ServiceStatus.Idle, Summary(result));
+        }
+        catch (MassChangeException ex)
+        {
+            lock (_sync)
+            {
+                _alarm = ex.Report;
+                _pending.UnionWith(taken);
+                _needFullRun = true;
+            }
+            SaveAlarm(ex.Report);
+            FilemanLog.Warn($"Massenänderung erkannt, Automatik angehalten: {ex.Report.Reason}{Environment.NewLine}  "
+                            + string.Join(Environment.NewLine + "  ", ex.Report.Examples));
+            foreach (var request in requests)
+                request.TrySetException(ex);
+            SetState(ServiceStatus.MassChange, ex.Report.Reason);
+            MassChangeDetected?.Invoke(this, ex.Report);
         }
         catch (Exception ex)
         {
@@ -519,12 +588,40 @@ public sealed class BackupService : IAsyncDisposable
         lock (_sync)
         {
             message ??= status == _state.Status ? _state.Message : null;
-            state = new ServiceState(status, _pending.Count, status == ServiceStatus.TargetMissing ? _workspace.Spool.Count : 0, _lastBackupUtc, message, progress);
+            state = new ServiceState(status, _pending.Count, status == ServiceStatus.TargetMissing ? _workspace.Spool.Count : 0, _lastBackupUtc, message, progress, _alarm);
             if (state == _state)
                 return;
             _state = state;
         }
         StateChanged?.Invoke(this, state);
+    }
+
+    private static readonly JsonSerializerOptions AlarmJson = new() { WriteIndented = true };
+
+    private MassChangeReport? LoadAlarm()
+    {
+        try
+        {
+            var file = _workspace.Paths.MassChangeAlarmFile;
+            return File.Exists(file) ? JsonSerializer.Deserialize<MassChangeReport>(File.ReadAllText(file), AlarmJson) : null;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private void SaveAlarm(MassChangeReport report)
+    {
+        try
+        {
+            Directory.CreateDirectory(_workspace.Paths.Home);
+            File.WriteAllText(_workspace.Paths.MassChangeAlarmFile, JsonSerializer.Serialize(report, AlarmJson));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            FilemanLog.Error("Alarmzustand konnte nicht gespeichert werden.", ex);
+        }
     }
 
     private static string Summary(BackupResult result) =>

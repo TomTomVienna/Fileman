@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
@@ -5,6 +6,7 @@ using System.Threading.Channels;
 using Fileman.Core.Archive;
 using Fileman.Core.Catalog;
 using Fileman.Core.Identity;
+using Fileman.Core.Protection;
 using Fileman.Core.Scanning;
 using Fileman.Core.Storage;
 
@@ -79,7 +81,10 @@ public sealed class BackupEngine
     }
 
     /// <summary>Was ein Arbeits-Thread für eine Datei vorbereitet hat.</summary>
-    private sealed record PreparedFile(DiskFile File, string? FileId, IngestResult? Content, Exception? Error);
+    /// <param name="KnownFormat">Endung mit bekanntem Dateiformat (Office, PDF, Bilder …).</param>
+    /// <param name="Suspicious">Inhalt passt nicht zur Endung (z. B. verschlüsselt).</param>
+    private sealed record PreparedFile(DiskFile File, string? FileId, IngestResult? Content, Exception? Error,
+        bool KnownFormat = false, bool Suspicious = false);
 
     /// <summary>Zustand eines einzelnen Laufs.</summary>
     private sealed class RunState(BackupEngine engine, BackupOptions options, IProgress<BackupProgress>? progress, CancellationToken ct)
@@ -132,6 +137,7 @@ public sealed class BackupEngine
                 }
                 toProcess.Sort((a, b) => PathUtil.Comparer.Compare(a.Path, b.Path));
 
+                CheckPlannedChanges(toProcess);
                 await ProcessAllAsync(toProcess).ConfigureAwait(false);
 
                 Report(BackupPhase.Finishing, toProcess.Count, toProcess.Count, null);
@@ -139,6 +145,7 @@ public sealed class BackupEngine
                     MarkDeleted(doc);
                 WriteFolderMoveMarkers();
 
+                options.Guard?.RecordCompleted(_result.Modified + _result.Deleted, _result.SuspiciousContent);
                 completed = true;
                 return _result;
             }
@@ -229,6 +236,35 @@ public sealed class BackupEngine
                 : string.Equals(path, s.Path, PathUtil.Comparison)
                   || string.Equals(Path.GetDirectoryName(path), s.Path, PathUtil.Comparison));
 
+        // ---------- Schutz vor Massenänderungen ----------
+
+        /// <summary>
+        /// Vor dem ersten Schreibzugriff: Wie viele bekannte Dateien sind geändert oder verschwunden?
+        /// Umbenennungen/Verschiebungen (gleiche Datei-ID, gleiche Größe und gleiches Datum) zählen nicht.
+        /// </summary>
+        private void CheckPlannedChanges(List<DiskFile> toProcess)
+        {
+            if (options.Guard is not { IsActive: true } guard)
+                return;
+            var changed = toProcess.Where(f => _byPath.ContainsKey(PathUtil.Key(f.Path))).Select(f => f.Path).ToList();
+            var gone = _missing;
+            if (changed.Count + gone.Count >= guard.Settings.MinFiles && gone.Count > 0)
+            {
+                var newFiles = new ConcurrentDictionary<string, (long Size, DateTime LastWriteUtc)>();
+                Parallel.ForEach(toProcess.Where(f => !_byPath.ContainsKey(PathUtil.Key(f.Path))),
+                    new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = FileScanner.DefaultParallelism },
+                    f =>
+                    {
+                        if (engine._identity.TryGetFileId(f.Path) is { } id)
+                            newFiles[id] = (f.Size, f.LastWriteUtc);
+                    });
+                gone = gone.Where(d => !(d.FileId is not null && newFiles.TryGetValue(d.FileId, out var m)
+                                         && m.Size == d.Size && m.LastWriteUtc == d.LastWriteUtc)).ToList();
+            }
+            guard.CheckPlanned(changed.Count, gone.Count, fullRun: options.Scopes is null, totalDocuments: _byPath.Count,
+                [.. changed, .. gone.Select(d => d.Path)]);
+        }
+
         // ---------- Parallele Verarbeitung ----------
 
         /// <summary>
@@ -278,12 +314,24 @@ public sealed class BackupEngine
                 Catalog.BeginTransaction();
                 var sinceCommit = Stopwatch.StartNew();
                 var processed = 0;
+                var guard = options.Guard is { IsActive: true } active ? active : null;
+                // Verdächtige Stände (Inhalt passt nicht zur Endung) erst am Ende ablegen – bei Alarm gar nicht.
+                var deferred = new List<PreparedFile>();
+                var knownFormat = 0;
                 await foreach (var work in window.Reader.ReadAllAsync(stop.Token).ConfigureAwait(false))
                 {
                     var prepared = await work.ConfigureAwait(false);
                     Report(BackupPhase.Saving, processed, files.Count, prepared.File.Path);
-                    Apply(prepared);
                     processed++;
+                    if (prepared.KnownFormat)
+                        knownFormat++;
+                    if (prepared.Suspicious && guard is not null)
+                    {
+                        deferred.Add(prepared);
+                        guard.CheckContent(deferred.Count, knownFormat, deferred.Count, deferred.Select(d => d.File.Path).ToList());
+                        continue;
+                    }
+                    Apply(prepared);
 
                     if (processed % CommitEveryFiles == 0 || sinceCommit.Elapsed > CommitInterval)
                     {
@@ -293,6 +341,13 @@ public sealed class BackupEngine
                     }
                 }
                 await producer.ConfigureAwait(false);
+
+                if (deferred.Count > 0)
+                {
+                    guard!.CheckContent(deferred.Count, knownFormat, deferred.Count, deferred.Select(d => d.File.Path).ToList());
+                    foreach (var prepared in deferred)
+                        Apply(prepared);
+                }
             }
             finally
             {
@@ -320,7 +375,9 @@ public sealed class BackupEngine
                     && _fileIdSnapshot.TryGetValue(fileId, out var known)
                     && known.Any(k => k.Size == file.Size && k.LastWriteUtc == file.LastWriteUtc);
                 var content = unchangedMove ? null : engine.Ingest(file.Path, token);
-                return new PreparedFile(file, fileId, content, null);
+                var knownFormat = content is not null && options.Guard is not null && ContentSignature.IsKnownFormat(file.Path);
+                var suspicious = knownFormat && ContentSignature.LooksWrong(file.Path, content!.Staged.TempPath);
+                return new PreparedFile(file, fileId, content, null, knownFormat, suspicious);
             }
             catch (OperationCanceledException)
             {
@@ -340,6 +397,8 @@ public sealed class BackupEngine
                 if (prepared.Error is not null)
                     ExceptionDispatchInfo.Throw(prepared.Error);
                 ProcessFile(prepared.File, prepared.FileId, prepared.Content, read => fallback = read);
+                if (prepared.Suspicious)
+                    _result.SuspiciousContent++;
             }
             catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
             {

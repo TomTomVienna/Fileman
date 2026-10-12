@@ -27,6 +27,9 @@ public sealed class BackupOptions
     /// <summary>Anzahl gleichzeitig gelesener und gesicherter Dateien (0 = automatisch).</summary>
     public int FileParallelism { get; init; }
 
+    /// <summary>Schutz vor Massenänderungen; null = keine Prüfung.</summary>
+    public Protection.MassChangeGuard? Guard { get; init; }
+
     public static int DefaultFileParallelism => Math.Clamp(Environment.ProcessorCount / 2, 2, 8);
 }
 
@@ -60,6 +63,8 @@ public sealed class BackupResult
     /// <summary>Ordner, die nicht gelesen werden konnten. Ihre Dateien werden ebenfalls NICHT als gelöscht markiert.</summary>
     public List<BackupError> UnreadableDirectories { get; } = [];
     public List<ChangeEvent> Changes { get; } = [];
+    /// <summary>Gesicherte Dateien, deren Inhalt nicht zur Endung passt (nur bei bestätigten Massenänderungen &gt; 0).</summary>
+    public int SuspiciousContent { get; set; }
     /// <summary>Zwischenstände, die aus dem lokalen Zwischenspeicher übernommen wurden.</summary>
     public int ImportedFromSpool { get; set; }
 

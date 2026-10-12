@@ -22,6 +22,9 @@ public sealed class AppPaths
 
     public string LogFile => Path.Combine(Home, "fileman.log");
 
+    /// <summary>Vorhanden, solange die Automatik wegen einer Massenänderung angehalten ist (übersteht Neustarts).</summary>
+    public string MassChangeAlarmFile => Path.Combine(Home, "massenaenderung.json");
+
     public string ViewDirectory => Path.Combine(Path.GetTempPath(), "Fileman", "Ansicht");
 
     /// <summary>Standard: %LOCALAPPDATA%\Fileman, überschreibbar mit der Umgebungsvariable FILEMAN_HOME.</summary>

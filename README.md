@@ -97,6 +97,7 @@ Als Kandidaten gelten Dokumente, die an ihrem bisherigen Ort fehlen. Dazu kommen
   - blau: Änderungen erkannt oder Sicherung läuft
   - gelb: Platte nicht angesteckt
   - rot: Fehler
+  - violett: angehalten wegen Massenänderung
   - grau: pausiert
 - **Linksklick** öffnet das Popup **„Letzte Änderungen“**. Ein Doppelklick auf einen Eintrag zeigt dessen Versionen.
 - **Archiv durchsuchen:**
@@ -112,6 +113,28 @@ Als Kandidaten gelten Dokumente, die an ihrem bisherigen Ort fehlen. Dazu kommen
   - Ruhezeit
   - Ausnahmen
 - Läuft nur einmal pro Benutzer. Beim ersten Start öffnen sich die Einstellungen.
+
+### Schutz vor Massenänderungen (`MassChangeGuard`)
+
+Ein Verschlüsselungstrojaner kann ältere Versionen im Archiv nicht zerstören, denn Fileman überschreibt nie etwas. Er würde aber den „aktuellen Stand“ im Archiv durch unbrauchbare Dateien ersetzen und die Platte füllen. Deshalb gibt es zwei Prüfungen.
+
+1. **Vor dem Schreiben:** Fileman zählt geänderte und verschwundene bekannte Dateien.
+   - Umbenennungen und Verschiebungen werden über die Datei-ID erkannt und zählen nicht.
+   - Im Automatik-Modus wird über ein Zeitfenster aufsummiert (`WindowMinutes`, Standard 10 Minuten). So fallen auch langsame Angriffe auf.
+   - Grenze im Automatik-Modus: `MinFiles` (Standard 200).
+   - Grenze bei vollständigen Abgleichen: zusätzlich `MinPercent` des Gesamtbestands (Standard 10 %). So schlagen z. B. normale Änderungen nach einer Woche ohne Platte nicht an.
+2. **Beim Lesen:** Fileman prüft, ob der Anfang einer Datei noch zu ihrer Endung passt.
+   - Geprüft werden Office (`PK` bzw. OLE), PDF, RTF, JPEG/PNG/GIF/TIFF, ZIP/7z/RAR.
+   - Solche Stände werden zurückgehalten und erst am Ende des Laufs abgelegt.
+   - Anschlag ab `SuspiciousContentMinFiles` (Standard 20), wenn mindestens die Hälfte der geprüften Dateien betroffen ist. Die zurückgehaltenen Stände werden dann verworfen.
+
+**Bei einem Alarm:**
+- Die Automatik hält an. Es wird auch nichts mehr zwischengespeichert.
+- Das Tray-Symbol wird **violett**, und ein Warnfenster mit betroffenen Ordnern und Beispielen erscheint.
+- Der Alarm übersteht Neustarts (Datei `massenaenderung.json`).
+- Mit **„Das war ich – Änderungen sichern“** wird einmal ohne Prüfung vollständig gesichert, danach greift der Schutz wieder.
+- In der CLI entspricht das `fileman backup --force` (Rückgabewert 5 = angehalten).
+- Alle Werte stehen unter `MassChange` in `settings.json`.
 
 ### Sicherheitsregeln im Kern
 
@@ -129,7 +152,7 @@ Als Kandidaten gelten Dokumente, die an ihrem bisherigen Ort fehlen. Dazu kommen
 fileman init-target E:\                          Sicherungsziel einrichten (legt E:\FilemanArchiv an)
 fileman roots add D:\Mandanten --name Mandanten  Quellordner hinzufügen (beliebig viele)
 fileman roots add C:\Users\me\Documents
-fileman backup                                   Änderungen sichern
+fileman backup [--force]                         Änderungen sichern (--force: auch bei Massenänderung)
 fileman status                                   Zustand anzeigen
 fileman find bilanz huber                        Suche, auch in früheren Pfaden und Namen
 fileman show 42                                  Pfadverlauf und Versionen von Dokument 42
@@ -155,6 +178,5 @@ Die Tray-Anwendung lässt sich dank `EnableWindowsTargeting` auch unter Linux ba
 ## Nächste Schritte
 
 - Erste Tests der Tray-Anwendung unter Windows (Layout, Benachrichtigungen, NTFS-Datei-ID).
-- Schutz vor Massenänderungen: Automatik pausieren und warnen, wenn plötzlich sehr viele Dateien geändert werden (Verdacht auf einen Erpressungstrojaner).
 - Optionale Verschlüsselung des Archivs.
 - Installations- bzw. Verteilpaket.

@@ -4,6 +4,7 @@ using Fileman.Core.Backup;
 using Fileman.Core.Catalog;
 using Fileman.Core.Configuration;
 using Fileman.Core.Identity;
+using Fileman.Core.Protection;
 using Fileman.Core.Scanning;
 
 namespace Fileman.Core;
@@ -98,8 +99,9 @@ public sealed class FilemanWorkspace
     /// Führt eine Sicherung aus und aktualisiert danach die lokale Katalog-Kopie. Bei einem vollständigen Lauf
     /// (ohne <paramref name="scopes"/>) werden anschließend auch die Zwischenstände aus dem Zwischenspeicher übernommen.
     /// </summary>
+    /// <param name="guard">Schutz vor Massenänderungen; ohne Angabe ein neuer nach den Einstellungen.</param>
     public async Task<BackupResult> RunBackupAsync(BackupTrigger trigger, IReadOnlyList<ScanScope>? scopes = null,
-        IProgress<BackupProgress>? progress = null, CancellationToken cancellationToken = default)
+        IProgress<BackupProgress>? progress = null, CancellationToken cancellationToken = default, MassChangeGuard? guard = null)
     {
         if (Settings.Roots.Count == 0)
             throw new FilemanException("Es sind noch keine Quellordner eingerichtet.");
@@ -112,6 +114,7 @@ public sealed class FilemanWorkspace
             Trigger = trigger,
             ScanParallelism = Settings.ScanThreads,
             FileParallelism = Settings.FileThreads,
+            Guard = guard ?? new MassChangeGuard(Settings.MassChange, _time),
         }, progress, cancellationToken).ConfigureAwait(false);
         if (scopes is null)
             result.ImportedFromSpool = Spool.ImportInto(archive, _time.GetUtcNow().UtcDateTime);

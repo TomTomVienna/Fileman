@@ -1,3 +1,5 @@
+using Fileman.Core.Protection;
+
 namespace Fileman.Core.Configuration;
 
 /// <summary>Benutzereinstellungen (settings.json).</summary>
@@ -33,6 +35,9 @@ public sealed class FilemanSettings
 
     /// <summary>Höchstgröße des lokalen Zwischenspeichers, solange die Sicherungsplatte fehlt.</summary>
     public int SpoolMaxMegabytes { get; set; } = 2048;
+
+    /// <summary>Schutz vor Massenänderungen (z. B. durch Verschlüsselungstrojaner).</summary>
+    public MassChangeSettings MassChange { get; set; } = new();
 
     /// <summary>Gleichzeitig durchsuchte Ordner (0 = automatisch nach Prozessorkernen).</summary>
     public int ScanThreads { get; set; }

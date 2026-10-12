@@ -6,7 +6,8 @@ namespace Fileman.App;
 
 /// <summary>
 /// Zeichnet die Tray-Symbole zur Laufzeit (farbiger Kreis mit "F"), damit keine Bilddateien gepflegt werden müssen.
-/// grün = alles gesichert, blau = Änderungen/Sicherung läuft, gelb = Platte fehlt, rot = Fehler, grau = pausiert/nicht eingerichtet.
+/// grün = alles gesichert, blau = Änderungen/Sicherung läuft, gelb = Platte fehlt, rot = Fehler,
+/// violett = angehalten wegen Massenänderung, grau = pausiert/nicht eingerichtet.
 /// </summary>
 internal static partial class StatusIcons
 {
@@ -18,6 +19,7 @@ internal static partial class StatusIcons
         ServiceStatus.Pending or ServiceStatus.Running => Color.FromArgb(31, 111, 235),
         ServiceStatus.TargetMissing => Color.FromArgb(219, 160, 0),
         ServiceStatus.Error => Color.FromArgb(207, 34, 46),
+        ServiceStatus.MassChange => Color.FromArgb(130, 40, 170),
         _ => Color.FromArgb(120, 120, 120),
     };
 

@@ -46,11 +46,11 @@ public sealed class TestEnvironment : IDisposable
         return path;
     }
 
-    public BackupResult Backup(IReadOnlyList<ScanScope>? scopes = null, BackupTrigger trigger = BackupTrigger.Manual)
+    public BackupResult Backup(IReadOnlyList<ScanScope>? scopes = null, BackupTrigger trigger = BackupTrigger.Manual, Core.Protection.MassChangeGuard? guard = null)
     {
         using var archive = BackupArchive.Open(ArchiveDir);
         var engine = new BackupEngine(archive, Identity, new ExclusionFilter(Excludes), Time);
-        var result = engine.RunAsync(new BackupOptions { Roots = Roots, Scopes = scopes, Trigger = trigger, FileParallelism = FileParallelism })
+        var result = engine.RunAsync(new BackupOptions { Roots = Roots, Scopes = scopes, Trigger = trigger, FileParallelism = FileParallelism, Guard = guard })
             .GetAwaiter().GetResult();
         Time.Advance(TimeSpan.FromMinutes(1));
         return result;

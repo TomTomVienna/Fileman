@@ -3,6 +3,7 @@ using Fileman.Core.Automation;
 using Fileman.Core.Backup;
 using Fileman.Core.Catalog;
 using Fileman.Core.Configuration;
+using Fileman.Core.Protection;
 
 namespace Fileman.App;
 
@@ -18,6 +19,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly Control _invoker;
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _pauseItem;
+    private readonly ToolStripMenuItem _alarmItem;
+    private MassChangeForm? _alarmForm;
     private RecentChangesForm? _recent;
     private ArchiveBrowserForm? _browser;
     private bool _settingsOpen;
@@ -36,12 +39,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _statusItem = new ToolStripMenuItem("Status wird ermittelt …") { Enabled = false };
         _pauseItem = new ToolStripMenuItem("Automatische Sicherung pausieren", null, (_, _) => TogglePause()) { CheckOnClick = true };
+        _alarmItem = new ToolStripMenuItem("Ungewöhnlich viele Änderungen prüfen …", null, (_, _) => ShowAlarm()) { Visible = false };
+        _alarmItem.Font = new Font(_alarmItem.Font, FontStyle.Bold);
         var recentItem = new ToolStripMenuItem("Letzte Änderungen anzeigen", null, (_, _) => ShowRecent());
         recentItem.Font = new Font(recentItem.Font, FontStyle.Bold);
         var menu = new ContextMenuStrip();
         menu.Items.AddRange(
         [
             _statusItem,
+            _alarmItem,
             new ToolStripSeparator(),
             recentItem,
             new ToolStripMenuItem("Jetzt sichern", null, (_, _) => BackupNow()),
@@ -71,7 +77,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _service = new BackupService(_workspace);
         _service.StateChanged += (_, state) => Post(() => OnStateChanged(state));
         _service.BackupCompleted += (_, result) => Post(() => OnBackupCompleted(result));
+        _service.MassChangeDetected += (_, _) => Post(() =>
+        {
+            Notify(ToolTipIcon.Error, "Sicherung angehalten", "Ungewöhnlich viele Dateien wurden geändert. Bitte prüfen!");
+            ShowAlarm();
+        });
         _service.Start();
+        if (_service.Alarm is not null)
+            Post(ShowAlarm); // Alarm von vor dem Neustart
 
         if (_workspace.Settings.Roots.Count == 0 || _workspace.Settings.Target is null)
             Post(ShowSettings);
@@ -98,6 +111,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _tray.Text = text.Length > 127 ? text[..127] : text;
         _statusItem.Text = text["Fileman – ".Length..];
         _recent?.UpdateState(state);
+        _alarmItem.Visible = state.Alarm is not null;
 
         if (state.Status != _lastStatus)
         {
@@ -152,6 +166,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             Notify(ToolTipIcon.Warning, "Sicherungsplatte nicht angesteckt", "Bitte die Sicherungsplatte anstecken und erneut versuchen.");
         }
+        catch (MassChangeException)
+        {
+            ShowAlarm();
+        }
         catch (OperationCanceledException)
         {
         }
@@ -159,6 +177,31 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             Notify(ToolTipIcon.Warning, "Sicherung nicht möglich", ex.Message);
         }
+    }
+
+    /// <summary>Warnfenster zur Massenänderung; bei „Das war ich“ wird weiter gesichert.</summary>
+    private void ShowAlarm()
+    {
+        if (_service.Alarm is not { } report)
+            return;
+        if (_alarmForm is { IsDisposed: false })
+        {
+            _alarmForm.Activate();
+            return;
+        }
+        var form = new MassChangeForm(report);
+        _alarmForm = form;
+        form.FormClosed += (_, _) =>
+        {
+            if (form.DialogResult == DialogResult.Yes)
+            {
+                _service.ConfirmMassChange();
+                Notify(ToolTipIcon.Info, "Sicherung wird fortgesetzt", "Die Änderungen werden jetzt gesichert.");
+            }
+            _alarmForm = null;
+        };
+        form.Show();
+        form.Activate();
     }
 
     private void TogglePause()
@@ -232,6 +275,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _tray.Visible = false;
         _recent?.Close();
         _browser?.Close();
+        _alarmForm?.Close();
         try
         {
             await _service.StopAsync().WaitAsync(TimeSpan.FromSeconds(15));
