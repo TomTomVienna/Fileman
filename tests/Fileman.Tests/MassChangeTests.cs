@@ -177,6 +177,18 @@ public class MassChangeTests : IDisposable
     }
 
     [Fact]
+    public void FirstBackup_OfFilesNotMatchingTheirExtension_IsNotSuspicious()
+    {
+        // z. B. Textdateien mit Endung .docx oder Exporte anderer Programme: bei neuen Dateien kein Alarm
+        for (var i = 0; i < 30; i++)
+            _env.Write(Path.Combine(_env.RootA, $"Export {i}.docx"), "eigentlich Text " + i);
+
+        var result = _env.Backup(guard: Guard(minFiles: 1000, suspicious: 10));
+
+        Assert.Equal(30, result.Created);
+    }
+
+    [Fact]
     public void ConfirmedChanges_AreBackedUpOnce_ThenGuardIsActiveAgain()
     {
         var files = CreateFiles(30);

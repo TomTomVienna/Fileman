@@ -21,6 +21,12 @@ public sealed class FilemanSettings
     /// <summary>Überwachte Quellordner.</summary>
     public List<RootFolder> Roots { get; set; } = [];
 
+    /// <summary>
+    /// Altbestände: Ordner früherer Sicherungen (z. B. Datumsordner auf einer externen Platte). Sie werden nicht
+    /// überwacht, sondern einmalig eingelesen und anschließend im Archiv den Quellordnern zugeordnet.
+    /// </summary>
+    public List<LegacyFolder> LegacyFolders { get; set; } = [];
+
     /// <summary>Die Sicherungsplatte; null, solange keine eingerichtet ist.</summary>
     public TargetSettings? Target { get; set; }
 
@@ -54,6 +60,11 @@ public sealed class RootFolder
     public string? Name { get; set; }
 
     public string DisplayName => string.IsNullOrWhiteSpace(Name) ? Path : Name!;
+}
+
+public sealed class LegacyFolder
+{
+    public string Path { get; set; } = "";
 }
 
 public sealed class TargetSettings

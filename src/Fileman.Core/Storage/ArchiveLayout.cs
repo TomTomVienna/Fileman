@@ -77,6 +77,23 @@ internal sealed class ArchiveLayout(ArchiveStore store, CatalogDatabase catalog,
             PlaceVersion(doc.Id, doc.Path, version.Hash, version.Size, version.LastWriteUtc, staged: null);
     }
 
+    /// <summary>
+    /// Legt eine Datei unverändert unter dem angegebenen Pfad ab (Altbestand „as is“). Existiert der Pfad schon,
+    /// passiert nichts. Bekannte Inhalte werden nur verlinkt.
+    /// </summary>
+    /// <returns>True, wenn die Datei neu abgelegt wurde.</returns>
+    public bool PlaceAsIs(string relative, string hash, long size, DateTime lastWriteUtc, StagedContent? staged)
+    {
+        if (store.Exists(relative))
+        {
+            if (staged is not null)
+                ArchiveStore.Discard(staged.TempPath);
+            return false;
+        }
+        Place(hash, size, lastWriteUtc, staged, relative);
+        return true;
+    }
+
     private void Place(string hash, long size, DateTime lastWriteUtc, StagedContent? staged, string relative)
     {
         var stored = catalog.GetBlobPath(hash);

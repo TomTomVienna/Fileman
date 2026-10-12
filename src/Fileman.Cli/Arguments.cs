@@ -27,7 +27,7 @@ internal sealed class Arguments
     }
 
     /// <summary>Optionen ohne Wert.</summary>
-    private static readonly HashSet<string> Flags = new(StringComparer.OrdinalIgnoreCase) { "help", "deleted", "quiet", "force" };
+    private static readonly HashSet<string> Flags = new(StringComparer.OrdinalIgnoreCase) { "help", "deleted", "quiet", "force", "yes" };
 
     private Arguments(List<string> positional, Dictionary<string, string?> options)
     {

@@ -46,6 +46,7 @@ try
         "verify" => Verify(),
         "watch" => await WatchAsync(),
         "legacy-analyze" => LegacyAnalyze(rest),
+        "legacy" => await LegacyAsync(rest),
         _ => throw new UsageException($"Unbekannter Befehl \"{command}\". Hilfe: fileman-cli --help"),
     };
 }
@@ -366,6 +367,128 @@ int LegacyAnalyze(Arguments a)
     return 0;
 }
 
+async Task<int> LegacyAsync(Arguments a)
+{
+    var sub = a.Positional.Count == 0 ? "list" : a.Positional[0].ToLowerInvariant();
+    switch (sub)
+    {
+        case "add":
+        {
+            var folders = a.Positional.Skip(1).ToList();
+            if (folders.Count == 0)
+                throw new UsageException("Verwendung: fileman-cli legacy add <ordner> [<ordner> …]");
+            var added = SettingsStore.AddLegacyFolders(workspace.Settings, folders);
+            workspace.SaveSettings();
+            Console.WriteLine($"{added} Altbestand-Ordner eingetragen. Einlesen mit: fileman-cli legacy import");
+            return 0;
+        }
+        case "list":
+        {
+            Dictionary<string, LegacySourceRecord> known = new(PathUtil.Comparer);
+            try
+            {
+                using var view = workspace.OpenCatalogForReading();
+                foreach (var source in view.Catalog.GetLegacySources())
+                    known[source.Path] = source;
+            }
+            catch (TargetNotConnectedException) { }
+            if (workspace.Settings.LegacyFolders.Count == 0)
+                Console.WriteLine("Keine Altbestände eingetragen. Hinzufügen: fileman-cli legacy add <ordner> …");
+            foreach (var folder in workspace.Settings.LegacyFolders)
+            {
+                var state = known.TryGetValue(folder.Path, out var s)
+                    ? s.ConsolidatedUtc is { } c ? $"übernommen und zugeordnet {DisplayText.Time(c)} ({s.Files} Dateien)"
+                    : s.ImportedUtc is { } i ? $"eingelesen {DisplayText.Time(i)} ({s.Files} Dateien), noch nicht zugeordnet"
+                    : "teilweise eingelesen"
+                    : Directory.Exists(folder.Path) ? "noch nicht eingelesen" : "nicht erreichbar";
+                Console.WriteLine($"{folder.Path}\n    {state}");
+            }
+            return 0;
+        }
+        case "import":
+        {
+            var progress = new Progress<LegacyProgress>(p =>
+            {
+                if (!Console.IsOutputRedirected)
+                    Console.Write($"\r{p.FolderIndex + 1}/{p.FolderCount} {Path.GetFileName(p.Folder)}: {p.Done}/{p.Total} Dateien".PadRight(79));
+            });
+            var result = await workspace.ImportLegacyAsync(progress, cancel.Token);
+            if (!Console.IsOutputRedirected)
+                Console.WriteLine();
+            Console.WriteLine($"Eingelesen: {result.Imported.Count} Altbestände, {result.Files} Dateien");
+            Console.WriteLine($"  davon gelesen (neuer Stand): {result.FilesRead}, nur verlinkt (Kopie): {result.FilesLinked}");
+            Console.WriteLine($"  neu auf der Platte: {DisplayText.Size(result.BytesStored)}");
+            if (result.AlreadyImported.Count > 0)
+                Console.WriteLine($"Bereits früher eingelesen: {result.AlreadyImported.Count}");
+            foreach (var folder in result.Unreachable)
+                Console.WriteLine($"NICHT ERREICHBAR: {folder}");
+            foreach (var error in result.Errors)
+                Console.WriteLine($"FEHLER: {error.Path}: {error.Message}");
+            Console.WriteLine("Zuordnung anzeigen: fileman-cli legacy propose");
+            return result.Errors.Count > 0 || result.Unreachable.Count > 0 ? 3 : 0;
+        }
+        case "propose":
+        case "consolidate":
+        {
+            var proposal = workspace.ProposeLegacyMapping();
+            PrintProposal(proposal);
+            if (sub == "propose")
+            {
+                Console.WriteLine("Übernehmen mit: fileman-cli legacy consolidate");
+                return 0;
+            }
+            if (proposal.Mappings.Count == 0)
+                return 0;
+            if (!a.Flag("yes"))
+            {
+                Console.Write("Diese Zuordnungen übernehmen? (j/n) ");
+                if (!string.Equals(Console.ReadLine()?.Trim(), "j", StringComparison.OrdinalIgnoreCase))
+                    return 0;
+            }
+            var result = await workspace.ConsolidateLegacyAsync(proposal.Mappings, cancellationToken: cancel.Token);
+            Console.WriteLine($"Neue Versionen:            {result.VersionsAdded}");
+            Console.WriteLine($"Duplikate zusammengeführt: {result.DuplicatesSkipped}");
+            Console.WriteLine($"Nur im Altbestand (heute nicht mehr vorhanden): {result.DocumentsCreated}");
+            Console.WriteLine($"Nicht zugeordnet (bleiben unter _Altbestand): {result.Unmapped}");
+            return 0;
+        }
+        case "report":
+        {
+            var folders = workspace.Settings.LegacyFolders.Select(l => l.Path).Where(Directory.Exists).ToList();
+            var report = a.Option("report") ?? LegacyReport.DefaultReportPath();
+            LegacyReport.Write(LegacyAnalyzer.Analyze(folders, "Eingetragene Altbestände", cancellationToken: cancel.Token), report);
+            Console.WriteLine($"Bericht: {report}");
+            return 0;
+        }
+        default:
+            throw new UsageException("Verwendung: fileman-cli legacy [list | add <ordner>… | import | propose | consolidate [--yes] | report]");
+    }
+}
+
+static void PrintProposal(LegacyProposal proposal)
+{
+    if (proposal.Groups.Count == 0)
+    {
+        Console.WriteLine("Keine Zuordnung gefunden. Sind die passenden Quellordner eingerichtet und mindestens einmal gesichert?");
+        return;
+    }
+    Console.WriteLine("Vorgeschlagene Zuordnung (Altbestand-Ordner → gesicherter Ordner):");
+    foreach (var g in proposal.Groups)
+    {
+        var from = g.LegacyPrefix.Length == 0 ? "(ganzer Datumsordner)" : g.LegacyPrefix;
+        Console.WriteLine($"  {from}  →  {g.TargetPrefix}");
+        Console.WriteLine($"      in {g.Mappings.Count} Altbeständen, {g.Files} Dateien, {g.MatchRate:P0} im Master bekannt"
+                          + (g.NewerThanMaster > 0 ? $", ACHTUNG: {g.NewerThanMaster} jünger als im Master" : ""));
+    }
+    var unmapped = proposal.UnmappedFiles.Values.Sum();
+    if (unmapped > 0)
+    {
+        Console.WriteLine($"Nicht zuordenbar (bleiben unter _Altbestand): {unmapped} Dateien, z. B.:");
+        foreach (var example in proposal.UnmappedExamples.Take(5))
+            Console.WriteLine("  " + example);
+    }
+}
+
 static void PrintMassChange(MassChangeReport report)
 {
     Console.WriteLine();
@@ -410,10 +533,14 @@ static void PrintHelp()
           fileman-cli changes [--count <n>]                  letzte Änderungen
           fileman-cli restore <versions-nr> [--to <ordner>]  Version wiederherstellen (überschreibt nie)
 
-        Alte Sicherungen (Datumsordner auf externer Platte):
-          fileman-cli legacy-analyze <ordner> [--report <datei.html>]
-                                                             Bericht: Kopien, geänderte Stände, gelöschte Dateien
-                                                             (liest nur, verändert nichts)
+        Altbestand (alte Sicherungen, z. B. Datumsordner auf externer Platte):
+          fileman-cli legacy add <ordner> [<ordner> …]       Datumsordner als Altbestand eintragen
+          fileman-cli legacy list                            eingetragene Altbestände und ihr Stand
+          fileman-cli legacy import                          einlesen ("as is" nach Dateien\_Altbestand)
+          fileman-cli legacy propose                         automatische Zuordnung zu den gesicherten Ordnern
+          fileman-cli legacy consolidate [--yes]             Zuordnung bestätigen und Versionsgeschichte aufbauen
+          fileman-cli legacy report [--report <datei.html>]  Übersicht der eingetragenen Altbestände
+          fileman-cli legacy-analyze <ordner>                Übersicht beliebiger Datumsordner (liest nur)
 
         Allgemein:
           --home <ordner>   anderer Ordner für Einstellungen (Standard: %LOCALAPPDATA%\Fileman)

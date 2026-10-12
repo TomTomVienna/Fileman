@@ -18,12 +18,22 @@ public static partial class LegacyAnalyzer
         if (!Directory.Exists(root))
             throw new FilemanException($"Der Ordner \"{root}\" existiert nicht.");
 
-        var scanner = new FileScanner(new ExclusionFilter(Configuration.FilemanSettings.DefaultExcludePatterns), parallelism: parallelism);
         var folders = Directory.EnumerateDirectories(root)
             .Where(d => !Configuration.FilemanSettings.DefaultExcludePatterns.Contains(Path.GetFileName(d), StringComparer.OrdinalIgnoreCase))
             .ToList();
         if (folders.Count == 0)
             throw new FilemanException($"In \"{root}\" gibt es keine Unterordner. Bitte den Ordner wählen, in dem die Datumsordner liegen.");
+        return Analyze(folders, root, progress, cancellationToken, parallelism);
+    }
+
+    /// <summary>Analysiert die angegebenen Datumsordner (z. B. die eingetragenen Altbestände).</summary>
+    /// <param name="title">Bezeichnung im Bericht.</param>
+    public static LegacyAnalysis Analyze(IReadOnlyList<string> folders, string title, IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default, int parallelism = 0)
+    {
+        if (folders.Count == 0)
+            throw new FilemanException("Es sind keine erreichbaren Altbestand-Ordner vorhanden.");
+        var scanner = new FileScanner(new ExclusionFilter(Configuration.FilemanSettings.DefaultExcludePatterns), parallelism: parallelism);
 
         var scanned = new List<(LegacySnapshot Snapshot, IReadOnlyList<DiskFile> Files)>();
         var unreadable = new List<string>();
@@ -86,7 +96,7 @@ public static partial class LegacyAnalyzer
 
         return new LegacyAnalysis
         {
-            RootPath = root,
+            RootPath = title,
             CreatedUtc = DateTime.UtcNow,
             Snapshots = scanned.Select(s => s.Snapshot).ToList(),
             States = stateList,

@@ -21,7 +21,7 @@ public sealed class FindQuery
 /// </summary>
 public sealed class CatalogDatabase : IDisposable
 {
-    private const int SchemaVersion = 2;
+    private const int SchemaVersion = 3;
 
     private readonly SqliteConnection _connection;
     private SqliteTransaction? _transaction;
@@ -62,8 +62,48 @@ public sealed class CatalogDatabase : IDisposable
             throw new FilemanException("Das Archiv wurde mit einer neueren Fileman-Version erstellt. Bitte Fileman aktualisieren.");
         if (version == SchemaVersion)
             return;
-        if (version != 0)
+        if (version == 1)
             throw new FilemanException("Dieses Archiv hat ein veraltetes Format aus einer Vorabversion. Bitte ein neues Archiv anlegen.");
+        if (version == 0)
+            CreateSchemaV2();
+        // Version 2 → 3: Altbestände (rein additiv, vorhandene Daten bleiben unverändert)
+        CreateLegacyTables();
+        Execute($"PRAGMA user_version = {SchemaVersion}");
+    }
+
+    private void CreateLegacyTables() =>
+        Execute("""
+            -- Alte Sicherungen (z. B. Datumsordner auf einer externen Platte), einmalig "as is" eingelesen.
+            CREATE TABLE IF NOT EXISTS LegacySources (
+                Id INTEGER PRIMARY KEY,
+                Path TEXT NOT NULL,
+                PathKey TEXT NOT NULL UNIQUE,
+                Name TEXT NOT NULL,
+                SnapshotUtc TEXT NOT NULL,
+                ImportedUtc TEXT NULL,
+                ConsolidatedUtc TEXT NULL,
+                Files INTEGER NOT NULL DEFAULT 0,
+                Bytes INTEGER NOT NULL DEFAULT 0
+            );
+
+            -- Jede Datei eines Altbestands; ArchivePath liegt unter "_Altbestand" im Ordner "Dateien".
+            CREATE TABLE IF NOT EXISTS LegacyFiles (
+                Id INTEGER PRIMARY KEY,
+                SourceId INTEGER NOT NULL REFERENCES LegacySources(Id),
+                RelativePath TEXT NOT NULL,
+                RelativeKey TEXT NOT NULL,
+                Size INTEGER NOT NULL,
+                LastWriteUtc TEXT NOT NULL,
+                Hash TEXT NOT NULL REFERENCES Blobs(Hash),
+                ArchivePath TEXT NOT NULL,
+                UNIQUE (SourceId, RelativeKey)
+            );
+            CREATE INDEX IF NOT EXISTS IX_LegacyFiles_Hash ON LegacyFiles(Hash);
+            CREATE INDEX IF NOT EXISTS IX_PathHistory_OldPath ON PathHistory(OldPath);
+            """);
+
+    private void CreateSchemaV2()
+    {
 
         Execute("""
             CREATE TABLE IF NOT EXISTS Documents (
@@ -143,7 +183,6 @@ public sealed class CatalogDatabase : IDisposable
             );
             CREATE INDEX IF NOT EXISTS IX_Events_Utc ON Events(Utc);
             """);
-        Execute($"PRAGMA user_version = {SchemaVersion}");
     }
 
     // ---------- Transaktionen ----------
@@ -247,6 +286,62 @@ public sealed class CatalogDatabase : IDisposable
     public void FinishRun(long runId, DateTime utc, int filesScanned, int changes, int errors) =>
         Execute("UPDATE Runs SET FinishedUtc=$u, FilesScanned=$f, Changes=$c, Errors=$e WHERE Id=$id",
             [("$u", ToDb(utc)), ("$f", filesScanned), ("$c", changes), ("$e", errors), ("$id", runId)]);
+
+    // ---------- Altbestände ----------
+
+    public LegacySourceRecord? GetLegacySource(string path) =>
+        Query("SELECT Id, Path, Name, SnapshotUtc, ImportedUtc, ConsolidatedUtc, Files, Bytes FROM LegacySources WHERE PathKey = $k",
+            [("$k", PathUtil.Key(path))], ReadLegacySource).FirstOrDefault();
+
+    public List<LegacySourceRecord> GetLegacySources() =>
+        Query("SELECT Id, Path, Name, SnapshotUtc, ImportedUtc, ConsolidatedUtc, Files, Bytes FROM LegacySources ORDER BY SnapshotUtc, Id",
+            [], ReadLegacySource);
+
+    public long InsertLegacySource(string path, string name, DateTime snapshotUtc) =>
+        InsertAndGetId("INSERT INTO LegacySources (Path, PathKey, Name, SnapshotUtc) VALUES ($p, $k, $n, $s)",
+            [("$p", path), ("$k", PathUtil.Key(path)), ("$n", name), ("$s", ToDb(snapshotUtc))]);
+
+    public void MarkLegacySourceImported(long id, DateTime snapshotUtc, DateTime utc, int files, long bytes) =>
+        Execute("UPDATE LegacySources SET SnapshotUtc=$s, ImportedUtc=$u, Files=$f, Bytes=$b WHERE Id=$id",
+            [("$s", ToDb(snapshotUtc)), ("$u", ToDb(utc)), ("$f", files), ("$b", bytes), ("$id", id)]);
+
+    public void MarkLegacySourceConsolidated(long id, DateTime utc) =>
+        Execute("UPDATE LegacySources SET ConsolidatedUtc=$u WHERE Id=$id", [("$u", ToDb(utc)), ("$id", id)]);
+
+    public void InsertLegacyFile(LegacyFileRecord file) =>
+        Execute("""
+            INSERT OR IGNORE INTO LegacyFiles (SourceId, RelativePath, RelativeKey, Size, LastWriteUtc, Hash, ArchivePath)
+            VALUES ($s, $p, $k, $size, $t, $h, $a)
+            """,
+            [("$s", file.SourceId), ("$p", file.RelativePath), ("$k", PathUtil.Key(file.RelativePath)), ("$size", file.Size),
+             ("$t", ToDb(file.LastWriteUtc)), ("$h", file.Hash), ("$a", file.ArchivePath)]);
+
+    public List<LegacyFileRecord> GetLegacyFiles(long? sourceId = null) =>
+        Query("SELECT SourceId, RelativePath, Size, LastWriteUtc, Hash, ArchivePath FROM LegacyFiles"
+              + (sourceId is null ? "" : " WHERE SourceId = $s") + " ORDER BY SourceId, RelativeKey",
+            sourceId is null ? [] : [("$s", sourceId.Value)],
+            r => new LegacyFileRecord(r.GetInt64(0), r.GetString(1), r.GetInt64(2), FromDb(r.GetString(3)), r.GetString(4), r.GetString(5)));
+
+    private static LegacySourceRecord ReadLegacySource(SqliteDataReader r) => new(
+        r.GetInt64(0), r.GetString(1), r.GetString(2), FromDb(r.GetString(3)),
+        r.IsDBNull(4) ? null : FromDb(r.GetString(4)), r.IsDBNull(5) ? null : FromDb(r.GetString(5)), r.GetInt32(6), r.GetInt64(7));
+
+    /// <summary>Alle Dokumente (auch gelöschte) – für die Zuordnung von Altbeständen.</summary>
+    public List<DocumentRecord> GetAllDocuments() =>
+        Query($"SELECT {DocumentColumns} FROM Documents d", [], ReadDocument);
+
+    /// <summary>Alle Versions-Hashes je Dokument.</summary>
+    public Dictionary<long, HashSet<string>> GetVersionHashesByDocument()
+    {
+        var result = new Dictionary<long, HashSet<string>>();
+        foreach (var (doc, hash) in Query("SELECT DocumentId, Hash FROM Versions", [], r => (r.GetInt64(0), r.GetString(1))))
+        {
+            if (!result.TryGetValue(doc, out var set))
+                result[doc] = set = [];
+            set.Add(hash);
+        }
+        return result;
+    }
 
     // ---------- Lesen ----------
 

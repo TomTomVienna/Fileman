@@ -1,10 +1,13 @@
 using Fileman.Core;
 using Fileman.Core.Archive;
+using Fileman.Core.Catalog;
 using Fileman.Core.Configuration;
 
 namespace Fileman.App;
 
-/// <summary>Quellordner, Sicherungsplatte und Optionen. Bearbeitet eine Kopie; gespeichert wird erst mit „OK“.</summary>
+/// <summary>
+/// Quellordner, Altbestand, Sicherungsplatte und Optionen (je ein Reiter). Bearbeitet eine Kopie; gespeichert wird erst mit „OK“.
+/// </summary>
 internal sealed class SettingsForm : Form
 {
     private readonly FilemanWorkspace _workspace;
@@ -14,6 +17,8 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _autostart;
     private readonly NumericUpDown _debounce;
     private readonly TextBox _excludes;
+    private readonly ListView _legacy;
+    private Dictionary<string, LegacySourceRecord> _legacyState = new(PathUtil.Comparer);
 
     /// <summary>So viele Quellordner sollen ohne Scrollen sichtbar sein.</summary>
     private const int VisibleRootRows = 10;
@@ -23,8 +28,8 @@ internal sealed class SettingsForm : Form
         _workspace = workspace;
         _settings = SettingsStore.Clone(workspace.Settings);
         Text = "Fileman – Einstellungen";
-        Size = new Size(820, 640);
-        MinimumSize = new Size(640, 520);
+        Size = new Size(820, 520);
+        MinimumSize = new Size(640, 420);
         StartPosition = FormStartPosition.CenterScreen;
         Icon = StatusIcons.For(Core.Automation.ServiceStatus.Idle);
 
@@ -40,11 +45,25 @@ internal sealed class SettingsForm : Form
         rootButtons.Controls.Add(Ui.Button("Ordner hinzufügen …", (_, _) => AddRoot()));
         rootButtons.Controls.Add(Ui.Button("Entfernen", (_, _) => RemoveRoot()));
         rootButtons.Controls.Add(new Label { Text = "Anzeigename ändern: Eintrag anklicken und F2 drücken.", AutoSize = true, Margin = new Padding(12, 12, 6, 6), ForeColor = SystemColors.GrayText });
-        var rootsGroup = Group("Diese Ordner werden gesichert", Stack(_roots, rootButtons));
+        var rootsPage = Page("Gesicherte Ordner", Stack(
+            Hint("Diese Ordner werden laufend überwacht und gesichert."), _roots, rootButtons));
+
+        // Altbestand
+        _legacy = Ui.DetailsList(("Ordner der alten Sicherung", 470), ("Stand", 260));
+        _legacy.MultiSelect = true;
+        var legacyButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        legacyButtons.Controls.Add(Ui.Button("Ordner hinzufügen …", (_, _) => AddLegacy()));
+        legacyButtons.Controls.Add(Ui.Button("Entfernen", (_, _) => RemoveLegacy()));
+        var legacyPage = Page("Altbestand", Stack(
+            Hint("Alte Sicherungen, z. B. Datumsordner, die früher auf eine externe Platte kopiert wurden. Jeder Ordner ist eine " +
+                 "Momentaufnahme. Altbestände werden nicht überwacht, sondern einmal eingelesen und dann automatisch den " +
+                 "gesicherten Ordnern zugeordnet (Tray-Menü „Altbestand übernehmen …“). Im Auswahldialog können mehrere Ordner " +
+                 "gleichzeitig markiert werden."),
+            _legacy, legacyButtons));
 
         // Sicherungsplatte
         _target = new Label { AutoSize = true, Margin = Ui.Gap, MaximumSize = new Size(700, 0) };
-        var targetGroup = Group("Sicherungsplatte", Stack(_target, Ui.Button("Sicherungsplatte festlegen …", async (_, _) => await ChooseTargetAsync())));
+        var targetPage = Page("Sicherungsplatte", Stack(_target, Ui.Button("Sicherungsplatte festlegen …", async (_, _) => await ChooseTargetAsync())));
 
         // Optionen
         _autostart = new CheckBox { Text = "Fileman beim Anmelden an Windows automatisch starten", AutoSize = true, Margin = Ui.Gap, Checked = SafeAutostartState() };
@@ -53,7 +72,7 @@ internal sealed class SettingsForm : Form
         debounceRow.Controls.Add(new Label { Text = "Automatisch sichern, wenn eine Datei so viele Sekunden nicht mehr geändert wurde:", AutoSize = true, Margin = new Padding(6, 10, 0, 6) });
         debounceRow.Controls.Add(_debounce);
         _excludes = new TextBox { Multiline = true, ScrollBars = ScrollBars.Vertical, Height = 90, Margin = Ui.Gap, Text = string.Join(Environment.NewLine, _settings.ExcludePatterns) };
-        var optionsGroup = Group("Optionen", Stack(_autostart, debounceRow,
+        var optionsPage = Page("Optionen", Stack(_autostart, debounceRow,
             new Label { Text = "Nicht sichern (ein Muster pro Zeile, * und ? erlaubt, z. B. *.tmp):", AutoSize = true, Margin = Ui.Gap },
             _excludes));
 
@@ -64,20 +83,23 @@ internal sealed class SettingsForm : Form
         var dialogButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
         dialogButtons.Controls.AddRange([cancelButton, okButton]);
 
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(8) };
+        var tabs = new TabControl { Dock = DockStyle.Fill, Padding = new Point(12, 4) };
+        tabs.TabPages.AddRange([rootsPage, legacyPage, targetPage, optionsPage]);
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(8) };
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.Controls.Add(rootsGroup, 0, 0);
-        layout.Controls.Add(targetGroup, 0, 1);
-        layout.Controls.Add(optionsGroup, 0, 2);
-        layout.Controls.Add(dialogButtons, 0, 3);
+        layout.Controls.Add(tabs, 0, 0);
+        layout.Controls.Add(dialogButtons, 0, 1);
         Controls.Add(layout);
 
         FillRoots();
+        FillLegacy();
         UpdateTarget();
-        Load += (_, _) => EnsureVisibleRootRows();
+        Load += async (_, _) =>
+        {
+            EnsureVisibleRootRows();
+            await LoadLegacyStateAsync();
+        };
     }
 
     /// <summary>
@@ -103,15 +125,98 @@ internal sealed class SettingsForm : Form
         Top = Math.Max(screen.Top, screen.Top + (screen.Height - Height) / 2);
     }
 
-    private static GroupBox Group(string title, Control content)
+    private static TabPage Page(string title, Control content)
     {
-        // Gruppen mit einer Liste füllen den verfügbaren Platz, alle anderen sind so hoch wie ihr Inhalt.
-        var fills = content is TableLayoutPanel { AutoSize: false };
-        var group = new GroupBox { Text = title, Dock = DockStyle.Fill, AutoSize = !fills, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(8), Margin = new Padding(0, 0, 0, 8) };
+        var page = new TabPage(title) { Padding = new Padding(8), UseVisualStyleBackColor = true };
         content.Dock = DockStyle.Fill;
-        group.Controls.Add(content);
-        return group;
+        page.Controls.Add(content);
+        return page;
     }
+
+    private static Label Hint(string text) =>
+        new() { Text = text, AutoSize = true, MaximumSize = new Size(740, 0), Margin = Ui.Gap, ForeColor = SystemColors.GrayText };
+
+    // ---------- Altbestand ----------
+
+    private void FillLegacy()
+    {
+        _legacy.BeginUpdate();
+        _legacy.Items.Clear();
+        foreach (var folder in _settings.LegacyFolders)
+        {
+            var item = new ListViewItem(folder.Path) { Tag = folder };
+            item.SubItems.Add(LegacyStateText(folder.Path));
+            _legacy.Items.Add(item);
+        }
+        _legacy.EndUpdate();
+    }
+
+    private string LegacyStateText(string path) =>
+        _legacyState.TryGetValue(path, out var s)
+            ? s.ConsolidatedUtc is { } c ? $"übernommen am {DisplayText.Time(c)}"
+            : s.ImportedUtc is not null ? $"eingelesen ({s.Files} Dateien), Zuordnung offen"
+            : "teilweise eingelesen"
+            : Directory.Exists(path) ? "noch nicht eingelesen" : "noch nicht eingelesen (nicht erreichbar)";
+
+    private async Task LoadLegacyStateAsync()
+    {
+        var sources = await Task.Run(() =>
+        {
+            try
+            {
+                using var view = _workspace.OpenCatalogForReading();
+                return view.Catalog.GetLegacySources();
+            }
+            catch (Exception ex) when (ex is FilemanException or IOException or Microsoft.Data.Sqlite.SqliteException)
+            {
+                return [];
+            }
+        });
+        if (IsDisposed)
+            return;
+        _legacyState = sources.ToDictionary(s => s.Path, PathUtil.Comparer);
+        FillLegacy();
+    }
+
+    private void AddLegacy()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Ordner der alten Sicherungen wählen (mehrere mit Strg oder Umschalt markieren), z. B. alle Datumsordner.",
+            UseDescriptionForTitle = true,
+            Multiselect = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+        try
+        {
+            var added = SettingsStore.AddLegacyFolders(_settings, dialog.SelectedPaths);
+            if (added < dialog.SelectedPaths.Length)
+                MessageBox.Show(this, $"{dialog.SelectedPaths.Length - added} Ordner waren bereits eingetragen.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            FillLegacy();
+        }
+        catch (FilemanException ex)
+        {
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+
+    private void RemoveLegacy()
+    {
+        var selected = _legacy.SelectedItems.Cast<ListViewItem>().Select(i => (LegacyFolder)i.Tag!).ToList();
+        if (selected.Count == 0)
+            return;
+        if (MessageBox.Show(this, $"{selected.Count} Altbestand-Ordner aus der Liste entfernen?\n\nBereits eingelesene Dateien und übernommene Versionen bleiben im Archiv erhalten.",
+                Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            return;
+        foreach (var folder in selected)
+            _settings.LegacyFolders.Remove(folder);
+        FillLegacy();
+    }
+
+    /// <summary>Wurden Altbestände eingetragen, die noch nicht eingelesen sind? (Tray bietet dann das Einlesen an.)</summary>
+    public bool HasNewLegacyFolders =>
+        _settings.LegacyFolders.Any(l => !_legacyState.TryGetValue(l.Path, out var s) || s.ImportedUtc is null);
 
     private static TableLayoutPanel Stack(params Control[] controls)
     {

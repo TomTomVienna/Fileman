@@ -114,6 +114,7 @@ Als Kandidaten gelten Dokumente, die an ihrem bisherigen Ort fehlen. Dazu kommen
   - Ruhezeit
   - Ausnahmen
 - Läuft nur einmal pro Benutzer. Beim ersten Start öffnen sich die Einstellungen.
+- **Startoptionen:** `Fileman.exe --archiv`, `--einstellungen` oder `--altbestand` öffnet das jeweilige Fenster, auch in einer bereits laufenden Instanz. Das Startmenü enthält „Fileman - Archiv durchsuchen“.
 
 ### Schutz vor Massenänderungen (`MassChangeGuard`)
 
@@ -137,24 +138,37 @@ Ein Verschlüsselungstrojaner kann ältere Versionen im Archiv nicht zerstören,
 - In der CLI entspricht das `fileman-cli backup --force` (Rückgabewert 5 = angehalten).
 - Alle Werte stehen unter `MassChange` in `settings.json`.
 
-### Alte Sicherungen analysieren (`LegacyAnalyzer`)
+### Altbestand übernehmen (`Legacy*`)
 
-Für Altbestände, bei denen ein Teilbaum immer wieder in Datumsordner kopiert wurde, etwa `E:\Sicherungen\Sicherung 2024-06-30\Mandanten\…`:
+Für alte Sicherungen, bei denen ein Teilbaum immer wieder in Datumsordner kopiert wurde, etwa `E:\Sicherungen\Sicherung 2024-06-30\Mandanten\…`.
 
-- **Nur lesen:** Die Analyse liest ausschließlich Metadaten (Pfad, Größe, Änderungsdatum) und verändert nichts.
-- **Wann ein Stand als Kopie gilt:** bei gleichem relativem Pfad, gleicher Größe und gleichem Änderungsdatum. Explorer-Kopien behalten Größe und Datum. Das Datum wird auf 2 s gerundet, wegen FAT/exFAT.
-- **Datum der Sicherung:** Es wird aus dem Ordnernamen gelesen (2024-06-30, 20240630, 30.06.2024, 2024_06 …). Ohne Datum im Namen gilt das jüngste Dateidatum im Ordner.
-- **Ergebnis:** ein HTML-Bericht (öffnet sich im Browser) mit
-  - Kennzahlen
-  - den Sicherungen in zeitlicher Reihenfolge, mit neuen Ständen je Sicherung und abweichenden Ordnern
-  - Dateien mit mehreren Ständen
-  - Dateien, die in der jüngsten Sicherung fehlen
-  - vermutlich verschobenen Dateien
+**Rollen:**
+- **Master** sind die gesicherten Quellordner.
+- **Altbestände** sind abgeschlossene Momentaufnahmen. Sie sind älter als der Master und ändern sich nicht mehr. Deshalb werden sie nicht überwacht, sondern einmal eingelesen.
 
-  Dazu kommt eine CSV-Datei mit allen Ständen für Excel.
-- **Aufruf:** in der Tray-App über „Alte Sicherungen analysieren …“, in der CLI mit `fileman-cli legacy-analyze <ordner> [--report <datei.html>]`.
+**Ablauf:**
+1. **Eintragen:** in den Einstellungen im Reiter „Altbestand“. Mehrere Datumsordner lassen sich gleichzeitig auswählen.
+2. **Einlesen** (`LegacyImporter`): Alles wird unverändert unter `Dateien\_Altbestand\<Laufwerk>\…\<Datumsordner>\…` abgelegt.
+   - Ein Stand ist definiert durch relativen Pfad, Größe und Änderungsdatum.
+   - Ein Stand, der schon aus einem anderen Datumsordner bekannt ist, wird nicht erneut gelesen, sondern verlinkt. Gleiche Inhalte liegen nur einmal auf der Platte.
+   - Ein abgebrochenes Einlesen wird beim nächsten Mal fortgesetzt.
+3. **Zuordnung vorschlagen** (`LegacyMapper`): Dafür ist keine Konfiguration nötig.
+   - Für jede Altbestand-Datei werden Master-Dokumente gleichen Namens bewertet. Gleicher Inhalt (Hash eines bekannten Stands) zählt am meisten, danach die Zahl der Pfadebenen, die von hinten übereinstimmen.
+   - Die Stimmen aller Altbestände werden gemeinsam ausgewertet. Was in einer Sicherung belegt ist, gilt auch für ältere.
+   - Ergebnis sind eine Hauptzuordnung, z. B. `Mandanten` → `D:\Mandanten`, und Ausnahmen für umbenannte Ordner, z. B. `Mandanten\Dr. Steiner` → `D:\Mandanten\Dr. Steiner & Partner`.
+   - Stände, die jünger sind als der Master, werden als unplausibel markiert.
+4. **Übernehmen** (`LegacyConsolidator`, nach Bestätigung):
+   - Jeder unterschiedliche Stand wird als Version (Art „Altbestand“) am Master-Pfad abgelegt, nur per Hardlink. Duplikate fallen weg.
+   - Dateien, die es im Master nicht mehr gibt, werden als „gelöscht“ mit Geschichte geführt.
+   - Nicht Zuordenbares bleibt unter `_Altbestand`.
+   - Die Übernahme lässt sich wiederholen, ohne etwas doppelt anzulegen.
 
-Geplanter nächster Schritt ist die Übernahme. Dabei wird jeder Stand genau einmal als Version ins Archiv übernommen, Duplikate fallen weg.
+Während Einlesen und Übernehmen pausiert die automatische Sicherung.
+
+**Aufruf:**
+- **Tray-App:** Menü „Altbestand übernehmen …“ oder `Fileman.exe --altbestand`.
+- **CLI:** `fileman-cli legacy add|list|import|propose|consolidate|report`.
+- **Übersichtsbericht vorab:** `fileman-cli legacy-analyze <ordner>` zeigt Kopien, geänderte Stände und gelöschte Dateien.
 
 ### Sicherheitsregeln im Kern
 

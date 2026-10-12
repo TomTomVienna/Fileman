@@ -122,6 +122,54 @@ public sealed class FilemanWorkspace
         return result;
     }
 
+    // ---------- Altbestände ----------
+
+    /// <summary>Liest alle eingetragenen, noch nicht übernommenen Altbestände „as is“ ins Archiv ein.</summary>
+    public async Task<Legacy.LegacyImportResult> ImportLegacyAsync(IProgress<Legacy.LegacyProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        using var archive = await OpenArchiveWaitingAsync(cancellationToken).ConfigureAwait(false);
+        var result = await new Legacy.LegacyImporter(archive, _time)
+            .ImportAsync(Settings.LegacyFolders.Select(l => l.Path).ToList(), progress, cancellationToken, Settings.FileThreads)
+            .ConfigureAwait(false);
+        RefreshCatalogCache(archive);
+        return result;
+    }
+
+    /// <summary>Schlägt vor, welche Ordner der Altbestände welchen gesicherten Quellordnern entsprechen.</summary>
+    public Legacy.LegacyProposal ProposeLegacyMapping()
+    {
+        using var archive = OpenArchive(readOnly: true);
+        return Legacy.LegacyMapper.Propose(archive.Catalog, Settings.Roots.Select(r => r.Path).ToList());
+    }
+
+    /// <summary>Übernimmt die bestätigten Zuordnungen in die Versionsgeschichte.</summary>
+    public async Task<Legacy.LegacyConsolidationResult> ConsolidateLegacyAsync(IReadOnlyList<Legacy.LegacyMapping> accepted,
+        IProgress<(int Done, int Total)>? progress = null, CancellationToken cancellationToken = default)
+    {
+        using var archive = await OpenArchiveWaitingAsync(cancellationToken).ConfigureAwait(false);
+        var result = await Task.Run(() => new Legacy.LegacyConsolidator(archive, _time).Consolidate(accepted, progress, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
+        RefreshCatalogCache(archive);
+        return result;
+    }
+
+    /// <summary>Öffnet das Archiv zum Schreiben; läuft gerade eine Sicherung, wird bis zu einer Minute gewartet.</summary>
+    private async Task<BackupArchive> OpenArchiveWaitingAsync(CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return OpenArchive();
+            }
+            catch (ArchiveBusyException) when (attempt < 60)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
     /// <summary>
     /// Öffnet den Katalog zum Lesen: von der Platte, wenn angesteckt, sonst die lokale Kopie.
     /// </summary>

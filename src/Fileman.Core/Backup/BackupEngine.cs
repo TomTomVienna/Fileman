@@ -375,7 +375,11 @@ public sealed class BackupEngine
                     && _fileIdSnapshot.TryGetValue(fileId, out var known)
                     && known.Any(k => k.Size == file.Size && k.LastWriteUtc == file.LastWriteUtc);
                 var content = unchangedMove ? null : engine.Ingest(file.Path, token);
-                var knownFormat = content is not null && options.Guard is not null && ContentSignature.IsKnownFormat(file.Path);
+                // Nur Änderungen bereits gesicherter Dateien prüfen: Ein Trojaner verschlüsselt Vorhandenes. Neue Dateien
+                // (z. B. bei der Erstsicherung) haben keinen Vorher-Stand; „seltsame“ neue Dateien sind kein Alarmzeichen.
+                var knownFormat = content is not null && options.Guard is not null
+                                  && _knownPathKeys.Contains(PathUtil.Key(file.Path))
+                                  && ContentSignature.IsKnownFormat(file.Path);
                 var suspicious = knownFormat && ContentSignature.LooksWrong(file.Path, content!.Staged.TempPath);
                 return new PreparedFile(file, fileId, content, null, knownFormat, suspicious);
             }

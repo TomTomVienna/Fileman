@@ -53,6 +53,7 @@ public static class DisplayText
         BackupTrigger.Manual => "manuell",
         BackupTrigger.Watcher => "automatisch",
         BackupTrigger.Reconcile => "Abgleich",
+        BackupTrigger.Legacy => "Altbestand",
         _ => trigger.ToString(),
     };
 }

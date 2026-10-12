@@ -27,8 +27,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private ServiceStatus? _lastStatus;
     private readonly EventWaitHandle _exitRequest;
     private readonly RegisteredWaitHandle _exitRegistration;
+    private readonly List<(EventWaitHandle Event, RegisteredWaitHandle Registration)> _showRequests = [];
 
-    public TrayApplicationContext()
+    /// <param name="initialWindow">Per Startoption gewünschtes Fenster (siehe <see cref="Program.Windows"/>).</param>
+    public TrayApplicationContext(string? initialWindow = null)
     {
         var paths = AppPaths.Default();
         FilemanLog.Configure(paths.LogFile);
@@ -54,7 +56,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             recentItem,
             new ToolStripMenuItem("Jetzt sichern", null, (_, _) => BackupNow()),
             new ToolStripMenuItem("Archiv durchsuchen …", null, (_, _) => ShowBrowser(null)),
-            new ToolStripMenuItem("Alte Sicherungen analysieren …", null, (_, _) => AnalyzeLegacyBackups()),
+            new ToolStripMenuItem("Altbestand übernehmen …", null, (_, _) => ShowLegacyImport()),
             new ToolStripSeparator(),
             _pauseItem,
             new ToolStripMenuItem("Einstellungen …", null, (_, _) => ShowSettings()),
@@ -92,6 +94,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _service.Start();
         if (_service.Alarm is not null)
             Post(ShowAlarm); // Alarm von vor dem Neustart
+
+        // Startoptionen aus einem zweiten Aufruf (z. B. Startmenü "Archiv durchsuchen") in dieser Instanz ausführen.
+        foreach (var window in Program.Windows)
+        {
+            var request = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ShowEventName(window));
+            var registration = ThreadPool.RegisterWaitForSingleObject(request, (_, _) => Post(() => ShowWindow(window)), null, Timeout.Infinite, executeOnlyOnce: false);
+            _showRequests.Add((request, registration));
+        }
+        if (initialWindow is not null)
+            Post(() => ShowWindow(initialWindow));
 
         if (_workspace.Settings.Roots.Count == 0 || _workspace.Settings.Target is null)
             Post(ShowSettings);
@@ -216,32 +228,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
         form.Activate();
     }
 
-    /// <summary>Analysiert per Explorer kopierte Datumsordner (liest nur) und öffnet den Bericht im Browser.</summary>
-    private async void AnalyzeLegacyBackups()
+    private LegacyImportForm? _legacyForm;
+
+    private void ShowWindow(string window)
     {
-        using var dialog = new FolderBrowserDialog
+        switch (window)
         {
-            Description = "Bitte den Ordner wählen, in dem die alten Sicherungen (Datumsordner) liegen, z. B. E:\\Sicherungen.",
-            UseDescriptionForTitle = true,
-        };
-        if (dialog.ShowDialog() != DialogResult.OK)
-            return;
-        Notify(ToolTipIcon.Info, "Analyse läuft", "Die alten Sicherungen werden gelesen. Es wird nichts verändert. Der Bericht öffnet sich danach im Browser.");
-        try
-        {
-            var report = Core.Legacy.LegacyReport.DefaultReportPath();
-            await Task.Run(() =>
-            {
-                var analysis = Core.Legacy.LegacyAnalyzer.Analyze(dialog.SelectedPath, parallelism: _workspace.Settings.ScanThreads);
-                Core.Legacy.LegacyReport.Write(analysis, report);
-            });
-            Ui.OpenWithDefaultProgram(report);
+            case "archiv": ShowBrowser(null); break;
+            case "einstellungen": ShowSettings(); break;
+            case "altbestand": ShowLegacyImport(); break;
         }
-        catch (Exception ex) when (ex is FilemanException or IOException or UnauthorizedAccessException)
-        {
-            FilemanLog.Error("Analyse alter Sicherungen fehlgeschlagen.", ex);
-            MessageBox.Show(ex.Message, "Fileman", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
+    }
+
+    /// <summary>Altbestand übernehmen: einlesen, Zuordnung prüfen, übernehmen.</summary>
+    private void ShowLegacyImport()
+    {
+        if (_legacyForm is null || _legacyForm.IsDisposed)
+            _legacyForm = new LegacyImportForm(_workspace, _service);
+        _legacyForm.Show();
+        _legacyForm.Activate();
     }
 
     private void TogglePause()
@@ -293,8 +298,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             using var form = new SettingsForm(_workspace);
-            if (form.ShowDialog() == DialogResult.OK)
-                _service.ReloadSettings();
+            if (form.ShowDialog() != DialogResult.OK)
+                return;
+            _workspace.ReloadSettings();
+            _service.ReloadSettings();
+            if (form.HasNewLegacyFolders
+                && MessageBox.Show("Es wurden Altbestände eingetragen, die noch nicht eingelesen sind. Jetzt übernehmen?", "Fileman",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                ShowLegacyImport();
         }
         finally
         {
@@ -316,6 +327,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _recent?.Close();
         _browser?.Close();
         _alarmForm?.Close();
+        _legacyForm?.Close();
         try
         {
             await _service.StopAsync().WaitAsync(TimeSpan.FromSeconds(15));
@@ -332,6 +344,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (disposing)
         {
             _exitRegistration.Unregister(null);
+            foreach (var (request, registration) in _showRequests)
+            {
+                registration.Unregister(null);
+                request.Dispose();
+            }
             _exitRequest.Dispose();
             _tray.Dispose();
             _recent?.Dispose();

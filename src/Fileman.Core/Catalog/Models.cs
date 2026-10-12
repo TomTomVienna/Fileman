@@ -32,6 +32,14 @@ public sealed class VersionRecord
     public string ArchivePath { get; set; } = "";
 }
 
+/// <summary>Ein eingelesener Altbestand (z. B. ein Datumsordner einer früheren Sicherung).</summary>
+/// <param name="SnapshotUtc">Stand der Sicherung: Datum aus dem Ordnernamen, sonst jüngstes Dateidatum.</param>
+public sealed record LegacySourceRecord(long Id, string Path, string Name, DateTime SnapshotUtc, DateTime? ImportedUtc,
+    DateTime? ConsolidatedUtc, int Files, long Bytes);
+
+/// <summary>Eine Datei eines Altbestands; RelativePath ist relativ zum Altbestand-Ordner.</summary>
+public sealed record LegacyFileRecord(long SourceId, string RelativePath, long Size, DateTime LastWriteUtc, string Hash, string ArchivePath);
+
 /// <summary>Ein von Fileman im Archivordner "Dateien" angelegter Name.</summary>
 public sealed record ArchiveFileRecord(string RelativePath, string Hash, long DocumentId, bool IsCurrent);
 
@@ -72,6 +80,8 @@ public enum BackupTrigger
     Watcher,
     /// <summary>Regelmäßiger Abgleich oder Abgleich beim Start.</summary>
     Reconcile,
+    /// <summary>Aus einem Altbestand (alte Sicherung) übernommen.</summary>
+    Legacy,
 }
 
 public sealed class RunRecord

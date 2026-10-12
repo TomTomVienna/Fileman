@@ -68,6 +68,7 @@ Source: "Kurzanleitung.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
+Name: "{autoprograms}\{#AppName} - Archiv durchsuchen"; Filename: "{app}\{#AppExe}"; Parameters: "--archiv"
 Name: "{autoprograms}\{#AppName} - Kurzanleitung"; Filename: "{app}\Kurzanleitung.txt"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
