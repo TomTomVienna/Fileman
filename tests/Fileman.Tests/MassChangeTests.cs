@@ -161,6 +161,7 @@ public class MassChangeTests : IDisposable
     {
         var files = CreateFiles(30, extension: ".docx");
         _env.Backup(guard: Guard(minFiles: 1000));
+        var original = File.ReadAllBytes(files[0]);
         var random = new Random(7);
         Modify(files.Take(15), _ => { var b = new byte[4096]; random.NextBytes(b); b[0] = 0x13; return b; });
         Modify(files.Skip(28), i => Docx("legitim geändert " + i)); // zwei gültige Änderungen
@@ -171,7 +172,7 @@ public class MassChangeTests : IDisposable
         var docs = _env.WithCatalog(c => c.Find(new FindQuery { Text = "Datei" }));
         Assert.All(docs.Where(d => d.FileName.CompareTo("Datei 015") < 0), d => Assert.Equal(1, d.VersionCount));
         var mirror = Path.Combine(_env.ArchiveDir, ArchiveStore.FilesFolderName, ArchiveStore.MirrorPath(files[0]));
-        Assert.Equal(Docx("Inhalt 0"), File.ReadAllBytes(mirror)); // aktueller Stand im Archiv nicht ersetzt
+        Assert.Equal(original, File.ReadAllBytes(mirror)); // aktueller Stand im Archiv nicht ersetzt
         Assert.Empty(Directory.EnumerateFiles(Path.Combine(_env.ArchiveDir, "tmp")));
     }
 

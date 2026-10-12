@@ -16,8 +16,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
         with:
           global-json-file: global.json
       - run: dotnet build -c Release
@@ -28,8 +28,8 @@ jobs:
     needs: test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
         with:
           global-json-file: global.json
       - name: Version aus Tag übernehmen (v1.2.3 → 1.2.3)
@@ -38,7 +38,7 @@ jobs:
         run: echo "VERSION_ARG=-p:Version=$('${{ github.ref_name }}'.Substring(1))" >> $env:GITHUB_ENV
       - name: Setup bauen
         run: dotnet build installer/Fileman.Installer.proj -c Release ${{ env.VERSION_ARG }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: Fileman-Setup
           path: artifacts/installer/*.exe
