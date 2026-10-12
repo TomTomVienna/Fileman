@@ -6,6 +6,7 @@ using Fileman.Core.Automation;
 using Fileman.Core.Backup;
 using Fileman.Core.Catalog;
 using Fileman.Core.Configuration;
+using Fileman.Core.Legacy;
 using Fileman.Core.Protection;
 using Fileman.Core.Restore;
 
@@ -44,6 +45,7 @@ try
         "restore" => Restore(rest),
         "verify" => Verify(),
         "watch" => await WatchAsync(),
+        "legacy-analyze" => LegacyAnalyze(rest),
         _ => throw new UsageException($"Unbekannter Befehl \"{command}\". Hilfe: fileman-cli --help"),
     };
 }
@@ -341,6 +343,29 @@ async Task<int> WatchAsync()
     return 0;
 }
 
+int LegacyAnalyze(Arguments a)
+{
+    var folder = a.Require(0, "der Ordner, in dem die alten Datumsordner liegen (z. B. E:\\Sicherungen)");
+    var report = a.Option("report") ?? LegacyReport.DefaultReportPath();
+    var analysis = LegacyAnalyzer.Analyze(folder, new Progress<string>(m =>
+    {
+        if (!Console.IsOutputRedirected)
+            Console.WriteLine(m);
+    }), cancel.Token, workspace.Settings.ScanThreads);
+    var csv = LegacyReport.Write(analysis, report);
+    Console.WriteLine();
+    Console.WriteLine($"Sicherungen:            {analysis.Snapshots.Count}");
+    Console.WriteLine($"Dateien insgesamt:      {analysis.TotalFiles} ({DisplayText.Size(analysis.TotalBytes)})");
+    Console.WriteLine($"davon reine Kopien:     {analysis.DuplicateFiles} ({DisplayText.Size(analysis.DuplicateBytes)})");
+    Console.WriteLine($"unterschiedliche Stände: {analysis.DistinctStates} von {analysis.DistinctPaths} Dateien");
+    Console.WriteLine($"mehrere Stände:         {analysis.FilesWithSeveralStates.Count} Dateien");
+    Console.WriteLine($"nicht mehr in jüngster: {analysis.MissingInNewest.Count} Dateien");
+    Console.WriteLine();
+    Console.WriteLine($"Bericht: {report}");
+    Console.WriteLine($"Liste:   {csv}");
+    return 0;
+}
+
 static void PrintMassChange(MassChangeReport report)
 {
     Console.WriteLine();
@@ -384,6 +409,11 @@ static void PrintHelp()
           fileman-cli show <dokument-nr>                     Pfadverlauf und Versionen eines Dokuments
           fileman-cli changes [--count <n>]                  letzte Änderungen
           fileman-cli restore <versions-nr> [--to <ordner>]  Version wiederherstellen (überschreibt nie)
+
+        Alte Sicherungen (Datumsordner auf externer Platte):
+          fileman-cli legacy-analyze <ordner> [--report <datei.html>]
+                                                             Bericht: Kopien, geänderte Stände, gelöschte Dateien
+                                                             (liest nur, verändert nichts)
 
         Allgemein:
           --home <ordner>   anderer Ordner für Einstellungen (Standard: %LOCALAPPDATA%\Fileman)

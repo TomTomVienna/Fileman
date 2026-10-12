@@ -54,6 +54,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             recentItem,
             new ToolStripMenuItem("Jetzt sichern", null, (_, _) => BackupNow()),
             new ToolStripMenuItem("Archiv durchsuchen …", null, (_, _) => ShowBrowser(null)),
+            new ToolStripMenuItem("Alte Sicherungen analysieren …", null, (_, _) => AnalyzeLegacyBackups()),
             new ToolStripSeparator(),
             _pauseItem,
             new ToolStripMenuItem("Einstellungen …", null, (_, _) => ShowSettings()),
@@ -213,6 +214,34 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
         form.Show();
         form.Activate();
+    }
+
+    /// <summary>Analysiert per Explorer kopierte Datumsordner (liest nur) und öffnet den Bericht im Browser.</summary>
+    private async void AnalyzeLegacyBackups()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Bitte den Ordner wählen, in dem die alten Sicherungen (Datumsordner) liegen, z. B. E:\\Sicherungen.",
+            UseDescriptionForTitle = true,
+        };
+        if (dialog.ShowDialog() != DialogResult.OK)
+            return;
+        Notify(ToolTipIcon.Info, "Analyse läuft", "Die alten Sicherungen werden gelesen. Es wird nichts verändert. Der Bericht öffnet sich danach im Browser.");
+        try
+        {
+            var report = Core.Legacy.LegacyReport.DefaultReportPath();
+            await Task.Run(() =>
+            {
+                var analysis = Core.Legacy.LegacyAnalyzer.Analyze(dialog.SelectedPath, parallelism: _workspace.Settings.ScanThreads);
+                Core.Legacy.LegacyReport.Write(analysis, report);
+            });
+            Ui.OpenWithDefaultProgram(report);
+        }
+        catch (Exception ex) when (ex is FilemanException or IOException or UnauthorizedAccessException)
+        {
+            FilemanLog.Error("Analyse alter Sicherungen fehlgeschlagen.", ex);
+            MessageBox.Show(ex.Message, "Fileman", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private void TogglePause()

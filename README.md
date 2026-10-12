@@ -137,6 +137,25 @@ Ein Verschlüsselungstrojaner kann ältere Versionen im Archiv nicht zerstören,
 - In der CLI entspricht das `fileman-cli backup --force` (Rückgabewert 5 = angehalten).
 - Alle Werte stehen unter `MassChange` in `settings.json`.
 
+### Alte Sicherungen analysieren (`LegacyAnalyzer`)
+
+Für Altbestände, bei denen ein Teilbaum immer wieder in Datumsordner kopiert wurde, etwa `E:\Sicherungen\Sicherung 2024-06-30\Mandanten\…`:
+
+- **Nur lesen:** Die Analyse liest ausschließlich Metadaten (Pfad, Größe, Änderungsdatum) und verändert nichts.
+- **Wann ein Stand als Kopie gilt:** bei gleichem relativem Pfad, gleicher Größe und gleichem Änderungsdatum. Explorer-Kopien behalten Größe und Datum. Das Datum wird auf 2 s gerundet, wegen FAT/exFAT.
+- **Datum der Sicherung:** Es wird aus dem Ordnernamen gelesen (2024-06-30, 20240630, 30.06.2024, 2024_06 …). Ohne Datum im Namen gilt das jüngste Dateidatum im Ordner.
+- **Ergebnis:** ein HTML-Bericht (öffnet sich im Browser) mit
+  - Kennzahlen
+  - den Sicherungen in zeitlicher Reihenfolge, mit neuen Ständen je Sicherung und abweichenden Ordnern
+  - Dateien mit mehreren Ständen
+  - Dateien, die in der jüngsten Sicherung fehlen
+  - vermutlich verschobenen Dateien
+
+  Dazu kommt eine CSV-Datei mit allen Ständen für Excel.
+- **Aufruf:** in der Tray-App über „Alte Sicherungen analysieren …“, in der CLI mit `fileman-cli legacy-analyze <ordner> [--report <datei.html>]`.
+
+Geplanter nächster Schritt ist die Übernahme. Dabei wird jeder Stand genau einmal als Version ins Archiv übernommen, Duplikate fallen weg.
+
 ### Sicherheitsregeln im Kern
 
 - Ein **nicht erreichbarer Quellordner** wird übersprungen, z. B. ein getrenntes Netzlaufwerk. Seine Dateien werden **nicht** als gelöscht markiert.
