@@ -15,6 +15,9 @@ internal sealed class SettingsForm : Form
     private readonly NumericUpDown _debounce;
     private readonly TextBox _excludes;
 
+    /// <summary>So viele Quellordner sollen ohne Scrollen sichtbar sein.</summary>
+    private const int VisibleRootRows = 10;
+
     public SettingsForm(FilemanWorkspace workspace)
     {
         _workspace = workspace;
@@ -74,6 +77,30 @@ internal sealed class SettingsForm : Form
 
         FillRoots();
         UpdateTarget();
+        Load += (_, _) => EnsureVisibleRootRows();
+    }
+
+    /// <summary>
+    /// Vergrößert das Fenster so, dass in der Quellordner-Liste <see cref="VisibleRootRows"/> Zeilen sichtbar sind.
+    /// Die Zeilenhöhe wird gemessen, damit es bei jeder Windows-Skalierung (100 %, 125 %, 150 % …) passt.
+    /// </summary>
+    private void EnsureVisibleRootRows()
+    {
+        var probe = _roots.Items.Count == 0 ? _roots.Items.Add("Probe") : null;
+        var firstRow = _roots.GetItemRect(0);
+        probe?.Remove();
+
+        // Oberkante der ersten Zeile = Höhe der Spaltenüberschrift; etwas Reserve für Rahmen.
+        var needed = firstRow.Top + VisibleRootRows * firstRow.Height + 4;
+        var missing = needed - _roots.ClientSize.Height;
+        if (missing <= 0)
+            return;
+
+        var screen = Screen.FromControl(this).WorkingArea;
+        var newHeight = Math.Min(Height + missing, screen.Height);
+        MinimumSize = new Size(MinimumSize.Width, Math.Min(MinimumSize.Height + missing, screen.Height));
+        Height = newHeight;
+        Top = Math.Max(screen.Top, screen.Top + (screen.Height - Height) / 2);
     }
 
     private static GroupBox Group(string title, Control content)
