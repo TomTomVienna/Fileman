@@ -20,6 +20,14 @@ public sealed class BackupOptions
     /// oder dieselbe Datei-ID woanders auf, wird das als Verschiebung erkannt statt als neue Datei.
     /// </summary>
     public TimeSpan MoveDetectionWindow { get; init; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>Anzahl gleichzeitig durchsuchter Ordner (0 = automatisch).</summary>
+    public int ScanParallelism { get; init; }
+
+    /// <summary>Anzahl gleichzeitig gelesener und gesicherter Dateien (0 = automatisch).</summary>
+    public int FileParallelism { get; init; }
+
+    public static int DefaultFileParallelism => Math.Clamp(Environment.ProcessorCount / 2, 2, 8);
 }
 
 public enum BackupPhase
@@ -49,6 +57,8 @@ public sealed class BackupResult
     public List<BackupError> Errors { get; } = [];
     /// <summary>Quellordner, die nicht erreichbar waren. Ihre Dateien werden NICHT als gelöscht markiert.</summary>
     public List<string> SkippedRoots { get; } = [];
+    /// <summary>Ordner, die nicht gelesen werden konnten. Ihre Dateien werden ebenfalls NICHT als gelöscht markiert.</summary>
+    public List<BackupError> UnreadableDirectories { get; } = [];
     public List<ChangeEvent> Changes { get; } = [];
 
     public int TotalChanges => Created + Modified + Moved + Deleted;

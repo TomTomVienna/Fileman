@@ -79,7 +79,7 @@ public class ArchiveTests : IDisposable
     }
 
     [Fact]
-    public void Workspace_BackupUpdatesLocalCatalogCopy_UsedWhenDiskIsUnplugged()
+    public async Task Workspace_BackupUpdatesLocalCatalogCopy_UsedWhenDiskIsUnplugged()
     {
         var home = Path.Combine(_env.Base, "home");
         var workspace = new FilemanWorkspace(new AppPaths(home), _env.Identity, _env.Time, () => []);
@@ -88,7 +88,7 @@ public class ArchiveTests : IDisposable
         workspace.SaveSettings();
         _env.Write(Path.Combine(_env.RootA, "Akte.txt"), "akte");
 
-        var result = workspace.RunBackup(Core.Catalog.BackupTrigger.Manual);
+        var result = await workspace.RunBackupAsync(Core.Catalog.BackupTrigger.Manual);
         Assert.Equal(1, result.Created);
 
         // Platte "abziehen"
@@ -97,6 +97,6 @@ public class ArchiveTests : IDisposable
         using var view = workspace.OpenCatalogForReading();
         Assert.True(view.IsCache);
         Assert.Single(view.Catalog.Find(new Core.Catalog.FindQuery { Text = "Akte" }));
-        Assert.Throws<TargetNotConnectedException>(() => workspace.RunBackup(Core.Catalog.BackupTrigger.Manual));
+        await Assert.ThrowsAsync<TargetNotConnectedException>(() => workspace.RunBackupAsync(Core.Catalog.BackupTrigger.Manual));
     }
 }

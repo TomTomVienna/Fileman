@@ -70,19 +70,21 @@ public sealed class FilemanWorkspace
     }
 
     /// <summary>Führt eine Sicherung aus und aktualisiert danach die lokale Katalog-Kopie.</summary>
-    public BackupResult RunBackup(BackupTrigger trigger, IReadOnlyList<ScanScope>? scopes = null,
+    public async Task<BackupResult> RunBackupAsync(BackupTrigger trigger, IReadOnlyList<ScanScope>? scopes = null,
         IProgress<BackupProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         if (Settings.Roots.Count == 0)
             throw new FilemanException("Es sind noch keine Quellordner eingerichtet.");
         using var archive = OpenArchive();
         var engine = new BackupEngine(archive, _identity, new ExclusionFilter(Settings.ExcludePatterns), _time);
-        var result = engine.Run(new BackupOptions
+        var result = await engine.RunAsync(new BackupOptions
         {
             Roots = Settings.Roots.Select(r => r.Path).ToList(),
             Scopes = scopes,
             Trigger = trigger,
-        }, progress, cancellationToken);
+            ScanParallelism = Settings.ScanThreads,
+            FileParallelism = Settings.FileThreads,
+        }, progress, cancellationToken).ConfigureAwait(false);
         RefreshCatalogCache(archive);
         return result;
     }

@@ -34,7 +34,7 @@ try
     {
         "init-target" => InitTarget(rest),
         "roots" => Roots(rest),
-        "backup" => Backup(),
+        "backup" => await BackupAsync(),
         "status" => Status(),
         "find" => Find(rest),
         "show" => Show(rest),
@@ -108,7 +108,7 @@ int Roots(Arguments a)
     }
 }
 
-int Backup()
+async Task<int> BackupAsync()
 {
     var lastLine = 0;
     var progress = new Progress<BackupProgress>(p =>
@@ -126,7 +126,7 @@ int Backup()
         lastLine = text.Length;
     });
 
-    var result = workspace.RunBackup(BackupTrigger.Manual, progress: progress, cancellationToken: cancel.Token);
+    var result = await workspace.RunBackupAsync(BackupTrigger.Manual, progress: progress, cancellationToken: cancel.Token);
     if (!Console.IsOutputRedirected)
         Console.Write("\r" + new string(' ', lastLine) + "\r");
 
@@ -139,9 +139,11 @@ int Backup()
     Console.WriteLine($"  neu geschrieben:  {Format.Size(result.BytesStored)}");
     foreach (var root in result.SkippedRoots)
         Console.WriteLine($"WARNUNG: Quellordner nicht erreichbar, übersprungen: {root}");
+    foreach (var unreadable in result.UnreadableDirectories)
+        Console.WriteLine($"WARNUNG: Ordner nicht lesbar, übersprungen: {unreadable.Path}: {unreadable.Message}");
     foreach (var error in result.Errors)
         Console.WriteLine($"FEHLER: {error.Path}: {error.Message}");
-    return result.Errors.Count > 0 || result.SkippedRoots.Count > 0 ? 3 : 0;
+    return result.Errors.Count > 0 || result.SkippedRoots.Count > 0 || result.UnreadableDirectories.Count > 0 ? 3 : 0;
 }
 
 int Status()
@@ -273,7 +275,7 @@ int Verify()
         if (!Console.IsOutputRedirected && (p.Done % 100 == 0 || p.Done == p.Total))
             Console.Write($"\rPrüfe {p.Done}/{p.Total} …");
     });
-    var result = ArchiveVerifier.Verify(archive, progress, cancel.Token);
+    var result = ArchiveVerifier.Verify(archive, progress, cancel.Token, workspace.Settings.FileThreads);
     if (!Console.IsOutputRedirected)
         Console.WriteLine();
     if (result.DamagedOrMissing.Count == 0)

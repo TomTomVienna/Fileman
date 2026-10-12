@@ -30,6 +30,12 @@ public sealed class FilemanSettings
 
     /// <summary>Abstand der vollständigen Abgleichsläufe im Automatik-Modus.</summary>
     public int ReconcileMinutes { get; set; } = 60;
+
+    /// <summary>Gleichzeitig durchsuchte Ordner (0 = automatisch nach Prozessorkernen).</summary>
+    public int ScanThreads { get; set; }
+
+    /// <summary>Gleichzeitig gesicherte bzw. geprüfte Dateien (0 = automatisch).</summary>
+    public int FileThreads { get; set; }
 }
 
 public sealed class RootFolder

@@ -1,4 +1,7 @@
+using System.Collections.Frozen;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
+using System.Threading.Channels;
 using Fileman.Core.Archive;
 using Fileman.Core.Catalog;
 using Fileman.Core.Identity;
@@ -9,6 +12,11 @@ namespace Fileman.Core.Backup;
 
 /// <summary>
 /// Vergleicht die Quellordner mit dem Katalog und sichert alle Änderungen (Delta-Sicherung).
+/// <para>
+/// Ablauf: Ordner parallel durchsuchen → geänderte Dateien bestimmen → Dateien parallel lesen, hashen, komprimieren
+/// und ablegen → Ergebnisse in fester Reihenfolge von genau einem Thread in den Katalog schreiben (SQLite erlaubt nur
+/// einen Schreiber; die feste Reihenfolge macht die Wiedererkennung reproduzierbar).
+/// </para>
 /// <para>
 /// Wiedererkennung eines Dokuments an neuem Ort, in dieser Reihenfolge:
 /// 1. gleicher Pfad, 2. gleiche Datei-ID (NTFS), 3. gleicher Inhalt (Hash), 4. gleicher Dateiname
@@ -39,11 +47,32 @@ public sealed class BackupEngine
     private CatalogDatabase Catalog => _archive.Catalog;
     private BlobStore Blobs => _archive.Blobs;
 
-    public BackupResult Run(BackupOptions options, IProgress<BackupProgress>? progress = null, CancellationToken cancellationToken = default)
+    public Task<BackupResult> RunAsync(BackupOptions options, IProgress<BackupProgress>? progress = null, CancellationToken cancellationToken = default) =>
+        new RunState(this, options, progress, cancellationToken).ExecuteAsync();
+
+    /// <summary>Lagert den Inhalt ein. Ändert sich die Datei währenddessen, wird es erneut versucht. Threadsicher.</summary>
+    private IngestResult Ingest(string path, CancellationToken ct)
     {
-        var run = new RunState(this, options, progress, cancellationToken);
-        return run.Execute();
+        for (var attempt = 1; ; attempt++)
+        {
+            var before = new FileInfo(path);
+            if (!before.Exists)
+                throw new FileNotFoundException(null, path);
+            var content = Blobs.Store(path, ct);
+            var after = new FileInfo(path);
+            if (after.Exists && after.Length == before.Length && after.LastWriteTimeUtc == before.LastWriteTimeUtc && content.Size == after.Length)
+                return new IngestResult(content, after.Length, after.LastWriteTimeUtc);
+            if (attempt >= MaxReadAttempts)
+                throw new IOException("Die Datei wurde während der Sicherung verändert und wird beim nächsten Lauf gesichert.");
+            ct.WaitHandle.WaitOne(TimeSpan.FromMilliseconds(300 * attempt));
+            ct.ThrowIfCancellationRequested();
+        }
     }
+
+    private sealed record IngestResult(StoredContent Content, long Size, DateTime LastWriteUtc);
+
+    /// <summary>Was ein Arbeits-Thread für eine Datei vorbereitet hat.</summary>
+    private sealed record PreparedFile(DiskFile File, string? FileId, IngestResult? Content, Exception? Error);
 
     /// <summary>Zustand eines einzelnen Laufs.</summary>
     private sealed class RunState(BackupEngine engine, BackupOptions options, IProgress<BackupProgress>? progress, CancellationToken ct)
@@ -57,9 +86,14 @@ public sealed class BackupEngine
         private long _runId;
         private DateTime _now;
 
+        // Unveränderliche Momentaufnahmen für die Arbeits-Threads (der Katalog-Thread ändert die Originale).
+        private FrozenSet<string> _knownPathKeys = FrozenSet<string>.Empty;
+        private FrozenDictionary<string, (long Size, DateTime LastWriteUtc)[]> _fileIdSnapshot =
+            FrozenDictionary<string, (long, DateTime)[]>.Empty;
+
         private CatalogDatabase Catalog => engine.Catalog;
 
-        public BackupResult Execute()
+        public async Task<BackupResult> ExecuteAsync()
         {
             _now = engine._time.GetUtcNow().UtcDateTime;
             _result.StartedUtc = _now;
@@ -71,9 +105,9 @@ public sealed class BackupEngine
             {
                 Report(BackupPhase.Scanning, 0, 0, null);
                 var roots = options.Roots.Select(PathUtil.Normalize).Distinct(PathUtil.Comparer).ToList();
-                var (diskFiles, coveredScopes) = ScanDisk(roots);
+                var (diskFiles, coveredScopes, unreadable) = ScanDisk(roots);
                 _result.FilesScanned = diskFiles.Count;
-                LoadCatalogState(diskFiles, coveredScopes);
+                LoadCatalogState(diskFiles, coveredScopes, unreadable);
 
                 var toProcess = new List<DiskFile>();
                 foreach (var file in diskFiles.Values)
@@ -86,35 +120,7 @@ public sealed class BackupEngine
                 }
                 toProcess.Sort((a, b) => PathUtil.Comparer.Compare(a.Path, b.Path));
 
-                Catalog.BeginTransaction();
-                var sinceCommit = Stopwatch.StartNew();
-                var pending = 0;
-                for (var i = 0; i < toProcess.Count; i++)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    var file = toProcess[i];
-                    Report(BackupPhase.Saving, i, toProcess.Count, file.Path);
-                    try
-                    {
-                        ProcessFile(file);
-                    }
-                    catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
-                    {
-                        // Zwischen Durchsuchen und Sichern gelöscht – wird beim nächsten Lauf erkannt.
-                    }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    {
-                        _result.Errors.Add(new BackupError(file.Path, ex.Message));
-                    }
-
-                    if (++pending >= CommitEveryFiles || sinceCommit.Elapsed > CommitInterval)
-                    {
-                        Catalog.Commit();
-                        Catalog.BeginTransaction();
-                        pending = 0;
-                        sinceCommit.Restart();
-                    }
-                }
+                await ProcessAllAsync(toProcess).ConfigureAwait(false);
 
                 Report(BackupPhase.Finishing, toProcess.Count, toProcess.Count, null);
                 foreach (var doc in _missing.Where(d => _unclaimed.Contains(d.Id)))
@@ -133,11 +139,14 @@ public sealed class BackupEngine
             }
         }
 
-        private (Dictionary<string, DiskFile> Files, List<ScanScope> Covered) ScanDisk(List<string> roots)
+        // ---------- Durchsuchen ----------
+
+        private (Dictionary<string, DiskFile> Files, List<ScanScope> Covered, List<string> Unreadable) ScanDisk(List<string> roots)
         {
-            var scanner = new FileScanner(engine._filter, [engine._archive.Directory]);
+            var scanner = new FileScanner(engine._filter, [engine._archive.Directory], options.ScanParallelism);
             var files = new Dictionary<string, DiskFile>();
             var covered = new List<ScanScope>();
+            var unreadable = new List<string>();
             var scopes = options.Scopes ?? roots.Select(r => new ScanScope(r)).ToList();
 
             foreach (var scope in scopes)
@@ -158,35 +167,46 @@ public sealed class BackupEngine
                 if (File.Exists(path))
                 {
                     var info = new FileInfo(path);
-                    files[PathUtil.Key(path)] = new DiskFile(path, info.Length, info.LastWriteTimeUtc);
+                    if (!engine._filter.IsExcluded(info.Name))
+                        files[PathUtil.Key(path)] = new DiskFile(path, info.Length, info.LastWriteTimeUtc);
                 }
                 else if (Directory.Exists(path))
                 {
-                    foreach (var file in scanner.Enumerate(path, scope.Recursive))
-                    {
+                    var scan = scanner.Scan(path, scope.Recursive, count => Report(BackupPhase.Scanning, files.Count + count, 0, null), ct);
+                    foreach (var file in scan.Files)
                         files[PathUtil.Key(file.Path)] = file;
-                        if (files.Count % 500 == 0)
-                            Report(BackupPhase.Scanning, files.Count, 0, file.Path);
+                    foreach (var failure in scan.FailedDirectories)
+                    {
+                        unreadable.Add(failure.Directory);
+                        _result.UnreadableDirectories.Add(new BackupError(failure.Directory, failure.Message));
                     }
                 }
                 covered.Add(scope with { Path = path });
             }
-            return (files, covered);
+            return (files, covered, unreadable);
         }
 
-        private void LoadCatalogState(Dictionary<string, DiskFile> diskFiles, List<ScanScope> coveredScopes)
+        private void LoadCatalogState(Dictionary<string, DiskFile> diskFiles, List<ScanScope> coveredScopes, List<string> unreadable)
         {
             foreach (var doc in Catalog.GetLiveDocuments())
             {
                 _byPath[PathUtil.Key(doc.Path)] = doc;
                 IndexFileId(doc);
-                if (!diskFiles.ContainsKey(PathUtil.Key(doc.Path)) && IsCovered(doc.Path, coveredScopes))
+                if (!diskFiles.ContainsKey(PathUtil.Key(doc.Path))
+                    && IsCovered(doc.Path, coveredScopes)
+                    && !unreadable.Any(dir => PathUtil.IsUnder(doc.Path, dir)))
                 {
                     _missing.Add(doc);
                     _unclaimed.Add(doc.Id);
                 }
             }
             _recentlyDeleted = Catalog.GetDeletedSince(_now - options.MoveDetectionWindow);
+
+            _knownPathKeys = _byPath.Keys.ToFrozenSet();
+            _fileIdSnapshot = _byPath.Values.Concat(_recentlyDeleted)
+                .Where(d => d.FileId is not null)
+                .GroupBy(d => d.FileId!)
+                .ToFrozenDictionary(g => g.Key, g => g.Select(d => (d.Size, d.LastWriteUtc)).ToArray());
         }
 
         private static bool IsCovered(string path, List<ScanScope> scopes) =>
@@ -195,30 +215,159 @@ public sealed class BackupEngine
                 : string.Equals(path, s.Path, PathUtil.Comparison)
                   || string.Equals(Path.GetDirectoryName(path), s.Path, PathUtil.Comparison));
 
-        private void IndexFileId(DocumentRecord doc)
+        // ---------- Parallele Verarbeitung ----------
+
+        /// <summary>
+        /// Arbeits-Threads bereiten Dateien vor (Datei-ID, lesen, hashen, ablegen); der aufrufende Ablauf übernimmt
+        /// die Ergebnisse streng in der Reihenfolge von <paramref name="files"/> in den Katalog.
+        /// </summary>
+        private async Task ProcessAllAsync(List<DiskFile> files)
         {
-            if (doc.FileId is null)
+            if (files.Count == 0)
                 return;
-            if (!_byFileId.TryGetValue(doc.FileId, out var list))
-                _byFileId[doc.FileId] = list = [];
-            list.Add(doc);
+
+            var parallelism = options.FileParallelism > 0 ? options.FileParallelism : BackupOptions.DefaultFileParallelism;
+            using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            using var slots = new SemaphoreSlim(parallelism);
+            var window = Channel.CreateBounded<Task<PreparedFile>>(new BoundedChannelOptions(parallelism * 4)
+            {
+                SingleReader = true,
+                SingleWriter = true,
+            });
+            var started = new List<Task<PreparedFile>>(files.Count);
+
+            var producer = Task.Run(async () =>
+            {
+                try
+                {
+                    foreach (var file in files)
+                    {
+                        await slots.WaitAsync(stop.Token).ConfigureAwait(false);
+                        var work = Task.Run(() =>
+                        {
+                            try { return Prepare(file, stop.Token); }
+                            finally { slots.Release(); }
+                        });
+                        started.Add(work);
+                        await window.Writer.WriteAsync(work, stop.Token).ConfigureAwait(false);
+                    }
+                    window.Writer.Complete();
+                }
+                catch (Exception ex)
+                {
+                    window.Writer.Complete(ex);
+                }
+            });
+
+            try
+            {
+                Catalog.BeginTransaction();
+                var sinceCommit = Stopwatch.StartNew();
+                var processed = 0;
+                await foreach (var work in window.Reader.ReadAllAsync(stop.Token).ConfigureAwait(false))
+                {
+                    var prepared = await work.ConfigureAwait(false);
+                    Report(BackupPhase.Saving, processed, files.Count, prepared.File.Path);
+                    Apply(prepared);
+                    processed++;
+
+                    if (processed % CommitEveryFiles == 0 || sinceCommit.Elapsed > CommitInterval)
+                    {
+                        Catalog.Commit();
+                        Catalog.BeginTransaction();
+                        sinceCommit.Restart();
+                    }
+                }
+                await producer.ConfigureAwait(false);
+            }
+            finally
+            {
+                // Bei Abbruch oder Fehler: alle Arbeits-Threads beenden lassen, bevor Semaphore und Token freigegeben werden.
+                stop.Cancel();
+                try { await producer.ConfigureAwait(false); } catch (Exception) { }
+                // Der Erzeuger ist beendet, "started" ändert sich nicht mehr.
+                try { await Task.WhenAll(started).ConfigureAwait(false); } catch (Exception) { }
+            }
         }
 
-        private void ProcessFile(DiskFile file)
+        /// <summary>Läuft auf einem Arbeits-Thread: darf den Katalog nicht anfassen.</summary>
+        private PreparedFile Prepare(DiskFile file, CancellationToken token)
+        {
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                var fileId = engine._identity.TryGetFileId(file.Path);
+                // Neuer Pfad, aber bekannte Datei-ID mit gleicher Größe und gleichem Datum: nur verschoben, Inhalt nicht lesen.
+                var unchangedMove = !_knownPathKeys.Contains(PathUtil.Key(file.Path))
+                    && fileId is not null
+                    && _fileIdSnapshot.TryGetValue(fileId, out var known)
+                    && known.Any(k => k.Size == file.Size && k.LastWriteUtc == file.LastWriteUtc);
+                var content = unchangedMove ? null : engine.Ingest(file.Path, token);
+                return new PreparedFile(file, fileId, content, null);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                return new PreparedFile(file, null, null, ex);
+            }
+        }
+
+        private void Apply(PreparedFile prepared)
+        {
+            try
+            {
+                if (prepared.Error is not null)
+                    ExceptionDispatchInfo.Throw(prepared.Error);
+                if (prepared.Content is not null)
+                    Register(prepared.Content);
+                ProcessFile(prepared.File, prepared.FileId, prepared.Content);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // Zwischen Durchsuchen und Sichern gelöscht – wird beim nächsten Lauf erkannt.
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _result.Errors.Add(new BackupError(prepared.File.Path, ex.Message));
+            }
+        }
+
+        private void Register(IngestResult content)
+        {
+            Catalog.EnsureBlob(content.Content.Hash, content.Size, content.Content.StoredSize, _now);
+            if (content.Content.IsNew)
+                _result.BytesStored += content.Content.StoredSize;
+        }
+
+        // ---------- Zuordnung (nur Katalog-Thread) ----------
+
+        private void ProcessFile(DiskFile file, string? fileId, IngestResult? prepared)
         {
             var key = PathUtil.Key(file.Path);
-            var fileId = engine._identity.TryGetFileId(file.Path);
+            // Falls ein Arbeits-Thread den Inhalt nicht gelesen hat, er aber doch gebraucht wird (selten): jetzt lesen.
+            IngestResult Content()
+            {
+                if (prepared is null)
+                {
+                    prepared = engine.Ingest(file.Path, ct);
+                    Register(prepared);
+                }
+                return prepared;
+            }
 
-            // 1. Gleicher Pfad: Inhalt geändert (oder nur Datum).
+            // 1. Gleicher Pfad: Inhalt geändert (oder nur Datum / Groß-/Kleinschreibung).
             if (_byPath.TryGetValue(key, out var existing))
             {
+                var sameMeta = existing.Size == file.Size && existing.LastWriteUtc == file.LastWriteUtc;
                 if (!string.Equals(existing.Path, file.Path, StringComparison.Ordinal))
                 {
-                    // Nur Groß-/Kleinschreibung geändert (Windows).
-                    ApplyMove(existing, file.Path, fileId, existing.Size == file.Size && existing.LastWriteUtc == file.LastWriteUtc ? null : Ingest(file.Path));
+                    ApplyMove(existing, file.Path, fileId, sameMeta ? null : Content());
                     return;
                 }
-                var stored = Ingest(file.Path);
+                var stored = Content();
                 if (stored.Content.Hash != existing.Hash)
                     AddVersion(existing, file.Path, stored, ChangeKind.Modified);
                 existing.Size = stored.Size;
@@ -237,7 +386,7 @@ public sealed class BackupEngine
                 return;
             }
 
-            var content = Ingest(file.Path);
+            var content = Content();
             // 3. Gleicher Inhalt: z. B. über Laufwerksgrenzen verschoben oder kopiert und Original gelöscht.
             candidate ??= FindByHash(content.Content.Hash, Path.GetFileName(file.Path));
             // 4. Gleicher Name unter den fehlenden Dateien (genau ein Treffer): verschoben und dabei geändert.
@@ -263,6 +412,15 @@ public sealed class BackupEngine
             _byPath[key] = doc;
             IndexFileId(doc);
             AddVersion(doc, file.Path, content, ChangeKind.Created);
+        }
+
+        private void IndexFileId(DocumentRecord doc)
+        {
+            if (doc.FileId is null)
+                return;
+            if (!_byFileId.TryGetValue(doc.FileId, out var list))
+                _byFileId[doc.FileId] = list = [];
+            list.Add(doc);
         }
 
         private DocumentRecord? FindByFileId(string fileId)
@@ -369,32 +527,7 @@ public sealed class BackupEngine
             _result.Changes.Add(change);
         }
 
-        /// <summary>Lagert den Inhalt ein. Ändert sich die Datei währenddessen, wird es erneut versucht.</summary>
-        private IngestResult Ingest(string path)
-        {
-            for (var attempt = 1; ; attempt++)
-            {
-                var before = new FileInfo(path);
-                if (!before.Exists)
-                    throw new FileNotFoundException(null, path);
-                var content = engine.Blobs.Store(path, ct);
-                var after = new FileInfo(path);
-                if (after.Exists && after.Length == before.Length && after.LastWriteTimeUtc == before.LastWriteTimeUtc && content.Size == after.Length)
-                {
-                    Catalog.EnsureBlob(content.Hash, content.Size, content.StoredSize, _now);
-                    if (content.IsNew)
-                        _result.BytesStored += content.StoredSize;
-                    return new IngestResult(content, after.Length, after.LastWriteTimeUtc);
-                }
-                if (attempt >= MaxReadAttempts)
-                    throw new IOException("Die Datei wurde während der Sicherung verändert und wird beim nächsten Lauf gesichert.");
-                Thread.Sleep(TimeSpan.FromMilliseconds(300 * attempt));
-            }
-        }
-
         private void Report(BackupPhase phase, int processed, int total, string? current) =>
             progress?.Report(new BackupProgress(phase, processed, total, current));
     }
-
-    private sealed record IngestResult(StoredContent Content, long Size, DateTime LastWriteUtc);
 }

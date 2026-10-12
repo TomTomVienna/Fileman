@@ -36,6 +36,7 @@ public sealed class TestEnvironment : IDisposable
     public ManualTimeProvider Time { get; } = new(new DateTimeOffset(2026, 10, 12, 8, 0, 0, TimeSpan.Zero));
     public IFileIdentityProvider Identity { get; set; } = FileIdentityProvider.ForCurrentPlatform();
     public List<string> Excludes { get; } = [.. FilemanSettings.DefaultExcludePatterns];
+    public int FileParallelism { get; set; } = 4;
 
     public string Write(string path, string content, DateTime? lastWriteUtc = null)
     {
@@ -49,7 +50,8 @@ public sealed class TestEnvironment : IDisposable
     {
         using var archive = BackupArchive.Open(ArchiveDir);
         var engine = new BackupEngine(archive, Identity, new ExclusionFilter(Excludes), Time);
-        var result = engine.Run(new BackupOptions { Roots = Roots, Scopes = scopes, Trigger = trigger });
+        var result = engine.RunAsync(new BackupOptions { Roots = Roots, Scopes = scopes, Trigger = trigger, FileParallelism = FileParallelism })
+            .GetAwaiter().GetResult();
         Time.Advance(TimeSpan.FromMinutes(1));
         return result;
     }
