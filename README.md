@@ -114,7 +114,7 @@ Als Kandidaten gelten Dokumente, die an ihrem bisherigen Ort fehlen. Dazu kommen
   - Ruhezeit
   - Ausnahmen
 - Läuft nur einmal pro Benutzer. Beim ersten Start öffnen sich die Einstellungen.
-- **Startoptionen:** `Fileman.exe --archiv`, `--einstellungen` oder `--altbestand` öffnet das jeweilige Fenster, auch in einer bereits laufenden Instanz. Das Startmenü enthält „Fileman - Archiv durchsuchen“.
+- **Startoptionen:** `Fileman.exe --archiv`, `--einstellungen`, `--altbestand` oder `--kopien` öffnet das jeweilige Fenster, auch in einer bereits laufenden Instanz. Das Startmenü enthält „Fileman - Archiv durchsuchen“.
 
 ### Schutz vor Massenänderungen (`MassChangeGuard`)
 
@@ -174,6 +174,20 @@ Während Einlesen und Übernehmen pausiert die automatische Sicherung.
 - **Tray-App:** Menü „Altbestand übernehmen …“ oder `Fileman.exe --altbestand`.
 - **CLI:** `fileman-cli legacy scan <oberordner> [--add]|add|list|import|propose|consolidate|report`.
 - **Übersichtsbericht vorab:** `fileman-cli legacy-analyze <ordner>` zeigt Kopien, geänderte Stände und gelöschte Dateien.
+
+### Kopien erkennen (`CopyDetector`)
+
+Fileman findet in den gesicherten Ordnern Teilbäume, die Kopien anderer Teilbäume sind, z. B. `Huber GmbH\Kopie 2022` oder `Mandanten alt`. Grundlage ist allein der Katalog, es wird keine Datei gelesen.
+
+- **Gleicher Inhalt an zwei Orten** „stimmt“ für das Ordnerpaar, ab dem sich die Pfade unterscheiden. Gewichtet wird mit 1/(Anzahl−1): Eine Datei, die es genau zweimal gibt, ist ein starkes Indiz, eine Vorlage in jedem Mandantenordner praktisch keines.
+- **Stärkstes Indiz:** Die Kopie enthält einen **früheren Stand** des Original-Dokuments aus der Versionsgeschichte, z. B. aus einem übernommenen Altbestand.
+- **Schwaches Indiz:** gleiche Dateinamen mit anderem Inhalt, denn jeder Mandant hat seine „Bilanz.xlsx“. Sie zählen nur ergänzend.
+- **Wer ist die Kopie:** die Seite mit den älteren Ständen. Bei gleichem Alter entscheiden der Name („Kopie“, „alt“ …) oder die Verschachtelung.
+- **Einschätzung:** ältere Kopie, identische Kopie oder „in der Kopie wurde weitergearbeitet“. Letzteres ist nicht vorausgewählt und wird beim Zusammenführen mit einer Warnung bestätigt.
+- **„Geschichte zusammenführen“** (`CopyMerger`) trägt die Stände der Kopie als ältere Versionen beim Original ein, nur per Hardlink. An den Ordnern des Anwenders ändert sich nichts.
+- **„Nicht mehr vorschlagen“** merkt sich das Ordnerpaar.
+- **Wann gesucht wird:** nach vollständigen Läufen höchstens einmal täglich im Hintergrund. Neue Funde meldet ein Hinweis, der per Klick das Fenster öffnet.
+- **Aufruf:** Tray-Menü „Kopien prüfen …“, `Fileman.exe --kopien` oder `fileman-cli copies [merge|ignore <nr>]`.
 
 ### Sicherheitsregeln im Kern
 

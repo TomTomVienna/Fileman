@@ -48,6 +48,20 @@ public static class DisplayText
         _ => status.ToString(),
     };
 
+    /// <summary>"1 Datei" / "3 Dateien" – Einzahl und Mehrzahl richtig.</summary>
+    public static string Count(long n, string singular, string plural) =>
+        n == 1 ? $"1 {singular}" : $"{n.ToString("N0", German)} {plural}";
+
+    public static string Files(long n) => Count(n, "Datei", "Dateien");
+
+    public static string Assessment(Copies.CopyAssessment assessment) => assessment switch
+    {
+        Copies.CopyAssessment.OlderCopy => "ältere Kopie",
+        Copies.CopyAssessment.Identical => "identische Kopie",
+        Copies.CopyAssessment.EditedSince => "in der Kopie wurde weitergearbeitet",
+        _ => assessment.ToString(),
+    };
+
     public static string Trigger(BackupTrigger trigger) => trigger switch
     {
         BackupTrigger.Manual => "manuell",

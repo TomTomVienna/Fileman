@@ -25,6 +25,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private ArchiveBrowserForm? _browser;
     private bool _settingsOpen;
     private ServiceStatus? _lastStatus;
+    private Action? _balloonClick;
+    private CopiesForm? _copiesForm;
+    private DateTime _lastCopyCheckUtc = DateTime.MinValue;
+    private readonly HashSet<string> _notifiedCopies = [];
     private readonly EventWaitHandle _exitRequest;
     private readonly RegisteredWaitHandle _exitRegistration;
     private readonly List<(EventWaitHandle Event, RegisteredWaitHandle Registration)> _showRequests = [];
@@ -57,6 +61,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             new ToolStripMenuItem("Jetzt sichern", null, (_, _) => BackupNow()),
             new ToolStripMenuItem("Archiv durchsuchen …", null, (_, _) => ShowBrowser(null)),
             new ToolStripMenuItem("Altbestand übernehmen …", null, (_, _) => ShowLegacyImport()),
+            new ToolStripMenuItem("Kopien prüfen …", null, (_, _) => ShowCopies()),
             new ToolStripSeparator(),
             _pauseItem,
             new ToolStripMenuItem("Einstellungen …", null, (_, _) => ShowSettings()),
@@ -77,7 +82,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             if (e.Button == MouseButtons.Left)
                 ToggleRecent();
         };
-        _tray.BalloonTipClicked += (_, _) => ShowRecent();
+        _tray.BalloonTipClicked += (_, _) => (_balloonClick ?? ShowRecent)();
+        _tray.BalloonTipClosed += (_, _) => _balloonClick = null;
 
         // Das Setup kann eine laufende Instanz über dieses Ereignis beenden ("Fileman.exe --exit").
         _exitRequest = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ExitEventName);
@@ -173,9 +179,45 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         if (_recent is { Visible: true })
             _ = _recent.RefreshAsync();
+        if (result.Trigger != BackupTrigger.Watcher)
+            _ = CheckForCopiesAsync();
     }
 
-    private void Notify(ToolTipIcon icon, string title, string text) => _tray.ShowBalloonTip(5000, title, text, icon);
+    /// <summary>Nach vollständigen Läufen höchstens einmal täglich im Hintergrund nach Kopien suchen und neue melden.</summary>
+    private async Task CheckForCopiesAsync()
+    {
+        if (DateTime.UtcNow - _lastCopyCheckUtc < TimeSpan.FromHours(24))
+            return;
+        _lastCopyCheckUtc = DateTime.UtcNow;
+        try
+        {
+            var candidates = await Task.Run(() => _workspace.DetectCopies());
+            var fresh = candidates.Where(c => _notifiedCopies.Add(c.Key)).ToList();
+            if (fresh.Count == 0)
+                return;
+            Notify(ToolTipIcon.Info, "Kopien gefunden",
+                (fresh.Count == 1 ? $"„{Path.GetFileName(fresh[0].CopyFolder)}“ sieht aus wie eine Kopie" : $"{fresh.Count} Ordner sehen aus wie Kopien") +
+                " anderer Ordner. Klicken, um sie zu prüfen.", ShowCopies);
+        }
+        catch (Exception ex) when (ex is FilemanException or IOException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            FilemanLog.Warn("Kopien-Erkennung fehlgeschlagen: " + ex.Message);
+        }
+    }
+
+    private void ShowCopies()
+    {
+        if (_copiesForm is null || _copiesForm.IsDisposed)
+            _copiesForm = new CopiesForm(_workspace);
+        _copiesForm.Show();
+        _copiesForm.Activate();
+    }
+
+    private void Notify(ToolTipIcon icon, string title, string text, Action? onClick = null)
+    {
+        _balloonClick = onClick;
+        _tray.ShowBalloonTip(5000, title, text, icon);
+    }
 
     // ---------- Aktionen ----------
 
@@ -237,6 +279,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             case "archiv": ShowBrowser(null); break;
             case "einstellungen": ShowSettings(); break;
             case "altbestand": ShowLegacyImport(); break;
+            case "kopien": ShowCopies(); break;
         }
     }
 
@@ -328,6 +371,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _browser?.Close();
         _alarmForm?.Close();
         _legacyForm?.Close();
+        _copiesForm?.Close();
         try
         {
             await _service.StopAsync().WaitAsync(TimeSpan.FromSeconds(15));

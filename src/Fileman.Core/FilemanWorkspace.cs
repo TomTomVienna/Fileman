@@ -136,6 +136,38 @@ public sealed class FilemanWorkspace
         return result;
     }
 
+    // ---------- Kopien-Erkennung ----------
+
+    /// <summary>Findet Ordner in den gesicherten Quellordnern, die Kopien anderer Ordner sind (nur aus dem Katalog).</summary>
+    public IReadOnlyList<Copies.CopyCandidate> DetectCopies(CancellationToken cancellationToken = default)
+    {
+        using var view = OpenCatalogForReading();
+        var roots = Settings.Roots.Select(r => PathUtil.Normalize(r.Path)).ToList();
+        var docs = view.Catalog.GetLiveDocuments().Where(d => roots.Any(r => PathUtil.IsUnder(d.Path, r))).ToList();
+        var ignored = Settings.IgnoredCopies.ToHashSet(StringComparer.Ordinal);
+        var history = view.Catalog.GetVersionHashesByDocument();
+        return Copies.CopyDetector.Detect(docs, history, cancellationToken: cancellationToken).Where(c => !ignored.Contains(c.Key)).ToList();
+    }
+
+    /// <summary>Übernimmt die Stände einer Kopie als ältere Versionen beim Original.</summary>
+    public async Task<Copies.CopyMergeResult> MergeCopyAsync(Copies.CopyCandidate candidate, CancellationToken cancellationToken = default)
+    {
+        using var archive = await OpenArchiveWaitingAsync(cancellationToken).ConfigureAwait(false);
+        var result = new Copies.CopyMerger(archive, _time).Merge(candidate);
+        RefreshCatalogCache(archive);
+        return result;
+    }
+
+    /// <summary>Dieses Ordnerpaar künftig nicht mehr vorschlagen.</summary>
+    public void IgnoreCopy(Copies.CopyCandidate candidate)
+    {
+        var current = SettingsStore.Load(Paths.SettingsFile);
+        if (!current.IgnoredCopies.Contains(candidate.Key))
+            current.IgnoredCopies.Add(candidate.Key);
+        SettingsStore.Save(current, Paths.SettingsFile);
+        Settings.IgnoredCopies = current.IgnoredCopies;
+    }
+
     /// <summary>Findet in einem Oberordner (z. B. "E:\Sicherungen") die Ordner, die alte Sicherungen sind.</summary>
     public IReadOnlyList<Legacy.LegacyCandidate> DetectLegacyFolders(string parent, CancellationToken cancellationToken = default) =>
         Legacy.LegacyDetector.Detect(parent,

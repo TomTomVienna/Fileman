@@ -47,6 +47,7 @@ try
         "watch" => await WatchAsync(),
         "legacy-analyze" => LegacyAnalyze(rest),
         "legacy" => await LegacyAsync(rest),
+        "copies" => await CopiesAsync(rest),
         _ => throw new UsageException($"Unbekannter Befehl \"{command}\". Hilfe: fileman-cli --help"),
     };
 }
@@ -489,6 +490,49 @@ async Task<int> LegacyAsync(Arguments a)
     }
 }
 
+async Task<int> CopiesAsync(Arguments a)
+{
+    var sub = a.Positional.Count == 0 ? "list" : a.Positional[0].ToLowerInvariant();
+    var candidates = workspace.DetectCopies(cancel.Token);
+    if (sub == "list")
+    {
+        if (candidates.Count == 0)
+        {
+            Console.WriteLine("Keine Kopien gefunden.");
+            return 0;
+        }
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            var c = candidates[i];
+            Console.WriteLine($"{i + 1,3}. {c.CopyFolder}");
+            Console.WriteLine($"     ist {DisplayText.Assessment(c.Assessment)} von {c.OriginalFolder}");
+            Console.WriteLine($"     {c.CopyFiles} Dateien: {c.Identical} gleich, {c.OlderInCopy} älter, {c.NewerInCopy} neuer, {c.OnlyInCopy} nur in der Kopie" +
+                              $" · jüngster Stand {DisplayText.Time(c.CopyNewestUtc)} (Original {DisplayText.Time(c.OriginalNewestUtc)})");
+        }
+        Console.WriteLine("Geschichte zusammenführen: fileman-cli copies merge <nr> · nicht mehr vorschlagen: fileman-cli copies ignore <nr>");
+        return 0;
+    }
+    var index = (int)a.RequireId(1, "die Nummer aus \"fileman-cli copies\"") - 1;
+    if (index < 0 || index >= candidates.Count)
+        throw new FilemanException("Diese Nummer gibt es nicht. Bitte zuerst \"fileman-cli copies\" aufrufen.");
+    var candidate = candidates[index];
+    switch (sub)
+    {
+        case "merge":
+            var result = await workspace.MergeCopyAsync(candidate, cancel.Token);
+            Console.WriteLine($"{DisplayText.Count(result.VersionsAdded, "älterer Stand", "ältere Stände")} beim Original eingetragen, " +
+                              $"{DisplayText.Count(result.AlreadyKnown, "Stand war", "Stände waren")} schon bekannt, {DisplayText.Files(result.OnlyInCopy)} nur in der Kopie.");
+            Console.WriteLine("An den Ordnern wurde nichts verändert. Die Kopie kann gelöscht werden, wenn sie nicht mehr gebraucht wird – alle Stände bleiben im Archiv.");
+            return 0;
+        case "ignore":
+            workspace.IgnoreCopy(candidate);
+            Console.WriteLine("Wird nicht mehr vorgeschlagen.");
+            return 0;
+        default:
+            throw new UsageException("Verwendung: fileman-cli copies [list | merge <nr> | ignore <nr>]");
+    }
+}
+
 static void PrintProposal(LegacyProposal proposal)
 {
     if (proposal.Groups.Count == 0)
@@ -566,6 +610,11 @@ static void PrintHelp()
           fileman-cli legacy consolidate [--yes]             Zuordnung bestätigen und Versionsgeschichte aufbauen
           fileman-cli legacy report [--report <datei.html>]  Übersicht der eingetragenen Altbestände
           fileman-cli legacy-analyze <ordner>                Übersicht beliebiger Datumsordner (liest nur)
+
+        Kopien in den gesicherten Ordnern:
+          fileman-cli copies                                 Ordner finden, die Kopien anderer Ordner sind
+          fileman-cli copies merge <nr>                      Stände der Kopie als ältere Versionen beim Original eintragen
+          fileman-cli copies ignore <nr>                     nicht mehr vorschlagen
 
         Allgemein:
           --home <ordner>   anderer Ordner für Einstellungen (Standard: %LOCALAPPDATA%\Fileman)

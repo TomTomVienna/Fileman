@@ -8,7 +8,7 @@ internal static class Program
     internal const string ExitEventName = @"Local\Fileman.Tray.Exit";
 
     /// <summary>Fenster, die per Startoption geöffnet werden können (auch in einer bereits laufenden Instanz).</summary>
-    internal static readonly string[] Windows = ["archiv", "einstellungen", "altbestand"];
+    internal static readonly string[] Windows = ["archiv", "einstellungen", "altbestand", "kopien"];
 
     internal static string ShowEventName(string window) => $@"Local\Fileman.Tray.Show.{window}";
 
@@ -22,7 +22,7 @@ internal static class Program
             return;
         }
 
-        // "Fileman.exe --archiv | --einstellungen | --altbestand" öffnet das Fenster (z. B. aus dem Startmenü).
+        // "Fileman.exe --archiv | --einstellungen | --altbestand | --kopien" öffnet das Fenster (z. B. aus dem Startmenü).
         var window = Windows.FirstOrDefault(w => args.Any(a => a.Equals("--" + w, StringComparison.OrdinalIgnoreCase)));
 
         // Nur eine Instanz pro Benutzer.

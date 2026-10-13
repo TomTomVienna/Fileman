@@ -27,6 +27,9 @@ public sealed class FilemanSettings
     /// </summary>
     public List<LegacyFolder> LegacyFolders { get; set; } = [];
 
+    /// <summary>Kopien-Erkennung: Ordnerpaare, die der Anwender als „keine alte Kopie“ markiert hat (werden nicht mehr vorgeschlagen).</summary>
+    public List<string> IgnoredCopies { get; set; } = [];
+
     /// <summary>Die Sicherungsplatte; null, solange keine eingerichtet ist.</summary>
     public TargetSettings? Target { get; set; }
 

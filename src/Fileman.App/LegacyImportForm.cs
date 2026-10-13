@@ -235,7 +235,7 @@ internal sealed class LegacyImportForm : Form
         if (result is null)
             return;
         _progressText.Text = $"Übernommen: {result.VersionsAdded:N0} neue Versionen, {result.DuplicatesSkipped:N0} Duplikate zusammengeführt, " +
-                             $"{result.DocumentsCreated:N0} {(result.DocumentsCreated == 1 ? "Datei" : "Dateien")} nur im Altbestand (als gelöscht auffindbar), {result.Unmapped:N0} nicht zugeordnet.";
+                             $"{DisplayText.Files(result.DocumentsCreated)} nur im Altbestand (als gelöscht auffindbar), {result.Unmapped:N0} nicht zugeordnet.";
         await RefreshAsync();
     }
 
