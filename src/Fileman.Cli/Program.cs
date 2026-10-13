@@ -382,6 +382,30 @@ async Task<int> LegacyAsync(Arguments a)
             Console.WriteLine($"{added} Altbestand-Ordner eingetragen. Einlesen mit: fileman-cli legacy import");
             return 0;
         }
+        case "scan":
+        {
+            var parent = a.Require(1, "der Oberordner, in dem die alten Sicherungen liegen (z. B. E:\\Sicherungen)");
+            var candidates = workspace.DetectLegacyFolders(parent, cancel.Token);
+            foreach (var c in candidates)
+            {
+                var mark = c.AlreadyAdded ? "=" : c.Suggested ? "+" : " ";
+                Console.WriteLine($" {mark} {c.Path}");
+                Console.WriteLine($"     {c.Reason}");
+            }
+            Console.WriteLine("(+ = als Altbestand vorgeschlagen, = bereits eingetragen)");
+            var suggested = candidates.Where(c => c.Suggested).Select(c => c.Path).ToList();
+            if (a.Flag("add") && suggested.Count > 0)
+            {
+                SettingsStore.AddLegacyFolders(workspace.Settings, suggested);
+                workspace.SaveSettings();
+                Console.WriteLine($"{suggested.Count} Ordner eingetragen. Einlesen mit: fileman-cli legacy import");
+            }
+            else if (suggested.Count > 0)
+            {
+                Console.WriteLine("Vorgeschlagene Ordner eintragen mit: fileman-cli legacy scan <ordner> --add");
+            }
+            return 0;
+        }
         case "list":
         {
             Dictionary<string, LegacySourceRecord> known = new(PathUtil.Comparer);
@@ -461,7 +485,7 @@ async Task<int> LegacyAsync(Arguments a)
             return 0;
         }
         default:
-            throw new UsageException("Verwendung: fileman-cli legacy [list | add <ordner>… | import | propose | consolidate [--yes] | report]");
+            throw new UsageException("Verwendung: fileman-cli legacy [list | scan <oberordner> [--add] | add <ordner>… | import | propose | consolidate [--yes] | report]");
     }
 }
 
@@ -534,6 +558,7 @@ static void PrintHelp()
           fileman-cli restore <versions-nr> [--to <ordner>]  Version wiederherstellen (überschreibt nie)
 
         Altbestand (alte Sicherungen, z. B. Datumsordner auf externer Platte):
+          fileman-cli legacy scan <oberordner> [--add]       alte Sicherungen im Oberordner erkennen (und eintragen)
           fileman-cli legacy add <ordner> [<ordner> …]       Datumsordner als Altbestand eintragen
           fileman-cli legacy list                            eingetragene Altbestände und ihr Stand
           fileman-cli legacy import                          einlesen ("as is" nach Dateien\_Altbestand)

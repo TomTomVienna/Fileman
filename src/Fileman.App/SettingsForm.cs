@@ -2,6 +2,7 @@ using Fileman.Core;
 using Fileman.Core.Archive;
 using Fileman.Core.Catalog;
 using Fileman.Core.Configuration;
+using Fileman.Core.Legacy;
 
 namespace Fileman.App;
 
@@ -52,13 +53,14 @@ internal sealed class SettingsForm : Form
         _legacy = Ui.DetailsList(("Ordner der alten Sicherung", 470), ("Stand", 260));
         _legacy.MultiSelect = true;
         var legacyButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
-        legacyButtons.Controls.Add(Ui.Button("Ordner hinzufügen …", (_, _) => AddLegacy()));
+        legacyButtons.Controls.Add(Ui.Button("Oberordner durchsuchen …", async (_, _) => await DetectLegacyAsync()));
+        legacyButtons.Controls.Add(Ui.Button("Einzelne Ordner hinzufügen …", (_, _) => AddLegacy()));
         legacyButtons.Controls.Add(Ui.Button("Entfernen", (_, _) => RemoveLegacy()));
         var legacyPage = Page("Altbestand", Stack(
             Hint("Alte Sicherungen, z. B. Datumsordner, die früher auf eine externe Platte kopiert wurden. Jeder Ordner ist eine " +
                  "Momentaufnahme. Altbestände werden nicht überwacht, sondern einmal eingelesen und dann automatisch den " +
-                 "gesicherten Ordnern zugeordnet (Tray-Menü „Altbestand übernehmen …“). Im Auswahldialog können mehrere Ordner " +
-                 "gleichzeitig markiert werden."),
+                 "gesicherten Ordnern zugeordnet (Tray-Menü „Altbestand übernehmen …“). Am einfachsten: „Oberordner durchsuchen …“ " +
+                 "und den Ordner wählen, in dem die alten Sicherungen liegen (z. B. E:\\Sicherungen) – Fileman erkennt sie selbst."),
             _legacy, legacyButtons));
 
         // Sicherungsplatte
@@ -176,6 +178,37 @@ internal sealed class SettingsForm : Form
             return;
         _legacyState = sources.ToDictionary(s => s.Path, PathUtil.Comparer);
         FillLegacy();
+    }
+
+    private async Task DetectLegacyAsync()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Ordner wählen, in dem die alten Sicherungen liegen (z. B. E:\\Sicherungen oder die ganze externe Platte).",
+            UseDescriptionForTitle = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+        // Mit den Einstellungen dieses Fensters suchen (auch noch nicht gespeicherte Quellordner/Altbestände berücksichtigen).
+        var settings = _settings;
+        var candidates = await Ui.RunAsync(this, () => LegacyDetector.Detect(dialog.SelectedPath,
+            settings.Roots.Select(r => r.Path).ToList(),
+            settings.Target is { LastKnownPath.Length: > 0 } t ? [t.LastKnownPath] : [],
+            settings.LegacyFolders.Select(l => l.Path).ToList()));
+        if (candidates is null)
+            return;
+        using var form = new LegacyDetectForm(dialog.SelectedPath, candidates);
+        if (form.ShowDialog(this) != DialogResult.OK || form.SelectedFolders.Count == 0)
+            return;
+        try
+        {
+            SettingsStore.AddLegacyFolders(_settings, form.SelectedFolders);
+            FillLegacy();
+        }
+        catch (FilemanException ex)
+        {
+            MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
     }
 
     private void AddLegacy()

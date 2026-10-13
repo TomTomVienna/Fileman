@@ -147,7 +147,12 @@ Für alte Sicherungen, bei denen ein Teilbaum immer wieder in Datumsordner kopie
 - **Altbestände** sind abgeschlossene Momentaufnahmen. Sie sind älter als der Master und ändern sich nicht mehr. Deshalb werden sie nicht überwacht, sondern einmal eingelesen.
 
 **Ablauf:**
-1. **Eintragen:** in den Einstellungen im Reiter „Altbestand“. Mehrere Datumsordner lassen sich gleichzeitig auswählen.
+1. **Eintragen:** in den Einstellungen im Reiter „Altbestand“.
+   - Am einfachsten über **„Oberordner durchsuchen …“**: Man wählt nur den Ordner, in dem die alten Sicherungen liegen, z. B. `E:\Sicherungen` oder `E:\`. `LegacyDetector` erkennt die Momentaufnahmen selbst und liest dafür nur Ordnernamen.
+   - Erkennungsmerkmale sind ein Datum im Namen und die gleiche Ordnerstruktur wie andere Kandidaten. So werden auch undatierte Kopien wie „Kopie Mandanten“ erkannt.
+   - Eine Zwischenebene ohne Datum, die mehrere Datumsordner enthält, wird automatisch durchsucht.
+   - Die Übereinstimmung mit den gesicherten Ordnern wird als Hinweis angezeigt. Fremde Ordner wie „Privat“ oder „Vorlagen“ erscheinen ohne Häkchen.
+   - Eingetragen wird erst nach Bestätigung. Einzelne Ordner lassen sich weiterhin von Hand hinzufügen (Mehrfachauswahl).
 2. **Einlesen** (`LegacyImporter`): Alles wird unverändert unter `Dateien\_Altbestand\<Laufwerk>\…\<Datumsordner>\…` abgelegt.
    - Ein Stand ist definiert durch relativen Pfad, Größe und Änderungsdatum.
    - Ein Stand, der schon aus einem anderen Datumsordner bekannt ist, wird nicht erneut gelesen, sondern verlinkt. Gleiche Inhalte liegen nur einmal auf der Platte.
@@ -167,7 +172,7 @@ Während Einlesen und Übernehmen pausiert die automatische Sicherung.
 
 **Aufruf:**
 - **Tray-App:** Menü „Altbestand übernehmen …“ oder `Fileman.exe --altbestand`.
-- **CLI:** `fileman-cli legacy add|list|import|propose|consolidate|report`.
+- **CLI:** `fileman-cli legacy scan <oberordner> [--add]|add|list|import|propose|consolidate|report`.
 - **Übersichtsbericht vorab:** `fileman-cli legacy-analyze <ordner>` zeigt Kopien, geänderte Stände und gelöschte Dateien.
 
 ### Sicherheitsregeln im Kern

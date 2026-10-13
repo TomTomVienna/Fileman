@@ -136,6 +136,14 @@ public sealed class FilemanWorkspace
         return result;
     }
 
+    /// <summary>Findet in einem Oberordner (z. B. "E:\Sicherungen") die Ordner, die alte Sicherungen sind.</summary>
+    public IReadOnlyList<Legacy.LegacyCandidate> DetectLegacyFolders(string parent, CancellationToken cancellationToken = default) =>
+        Legacy.LegacyDetector.Detect(parent,
+            Settings.Roots.Select(r => r.Path).ToList(),
+            Settings.Target is { LastKnownPath.Length: > 0 } target ? [target.LastKnownPath] : [],
+            Settings.LegacyFolders.Select(l => l.Path).ToList(),
+            cancellationToken);
+
     /// <summary>Schlägt vor, welche Ordner der Altbestände welchen gesicherten Quellordnern entsprechen.</summary>
     public Legacy.LegacyProposal ProposeLegacyMapping()
     {
